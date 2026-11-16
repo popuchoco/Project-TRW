@@ -44,6 +44,7 @@ body {
   top: 14px;
   left: 14px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
   padding: 9px 11px;
@@ -102,6 +103,56 @@ body {
   border-color: #9eacb2;
 }
 
+.save-file-input {
+  display: none;
+}
+
+.source-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 18px;
+  border: 1px solid #d4dadd;
+  border-radius: 10px;
+  color: #344149;
+  box-shadow: 0 8px 32px rgb(31 47 56 / 18%);
+}
+
+.source-dialog::backdrop {
+  background: rgb(31 47 56 / 32%);
+}
+
+.source-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.source-dialog p {
+  margin: 0 0 16px;
+  color: #536168;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.update-banner {
+  position: absolute;
+  z-index: 3;
+  top: 14px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  transform: translateX(-50%);
+  border: 1px solid rgb(103 119 128 / 18%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 95%);
+  color: #344149;
+  font-size: 12px;
+  box-shadow: 0 2px 12px rgb(31 47 56 / 8%);
+  white-space: nowrap;
+}
+
 .map-status {
   position: absolute;
   z-index: 2;
@@ -146,6 +197,7 @@ body {
   .map-toolbar {
     top: 8px;
     left: 8px;
+    max-width: calc(100vw - 16px);
     gap: 9px;
     padding: 7px 8px;
   }
@@ -159,8 +211,17 @@ body {
   }
 
   .map-status {
-    top: 56px;
+    top: 106px;
     left: 9px;
+  }
+
+  .update-banner {
+    top: auto;
+    right: 8px;
+    bottom: 64px;
+    left: auto;
+    max-width: calc(100vw - 16px);
+    transform: none;
   }
 
   .town-info {

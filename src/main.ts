@@ -2,6 +2,11 @@ import { Application } from 'pixi.js';
 import { MapDataLoader } from './map/loader';
 import type { LodId } from './map/lod';
 import { MapRenderer } from './render/MapRenderer';
+import { importSaveFile, triggerSaveDownload } from './save/import-export';
+import { IndexedDbSaveStorage } from './save/storage';
+import { loadSave, savePayload } from './save/save';
+import { requestPersistentStorage } from './save/persistence';
+import { registerServiceWorker } from './sw/register';
 import type { TownFeature } from './map/hit';
 import './style.css';
 
@@ -65,6 +70,9 @@ function createUi(mount: HTMLElement): {
   infoText: HTMLElement;
   status: HTMLElement;
   fpsSelect: HTMLSelectElement;
+  updateBanner: HTMLElement;
+  updateButton: HTMLButtonElement;
+  fileInput: HTMLInputElement;
 } {
   const toolbar = makeElement('section', 'map-toolbar');
   const product = makeElement('div', 'map-brand');
@@ -84,23 +92,46 @@ function createUi(mount: HTMLElement): {
 
   const sources = makeElement('button', 'source-button', '資料來源');
   sources.type = 'button';
-  sources.title = '資料來源說明將於後續階段加入';
-  sources.addEventListener('click', () => {
-    status.textContent = '資料來源說明將於後續階段加入。';
-    status.hidden = false;
-  });
-  toolbar.append(product, settings, sources);
+  const sourceDialog = makeElement('dialog', 'source-dialog');
+  sourceDialog.setAttribute('aria-labelledby', 'source-dialog-title');
+  const sourceHeading = makeElement('h2', '', '資料來源');
+  sourceHeading.id = 'source-dialog-title';
+  const sourceDetails = makeElement('p', '', '提供機關：內政部國土測繪中心\n資料名稱：鄉鎮市區界線(TWD97經緯度)，版本 1140318\n來源：https://data.gov.tw/dataset/7441\n授權：政府資料開放授權條款－第1版 https://data.gov.tw/license\n本專案已對原始資料進行簡化、拆分與格式轉換。');
+  const closeSources = makeElement('button', 'source-button', '關閉');
+  closeSources.type = 'button';
+  sources.addEventListener('click', () => sourceDialog.showModal());
+  closeSources.addEventListener('click', () => sourceDialog.close());
+  sourceDialog.append(sourceHeading, sourceDetails, closeSources);
+
+  const exportButton = makeElement('button', 'source-button', '匯出存檔');
+  exportButton.type = 'button';
+  exportButton.dataset.action = 'export-save';
+  const importButton = makeElement('button', 'source-button', '匯入存檔');
+  importButton.type = 'button';
+  importButton.dataset.action = 'import-save';
+  const fileInput = makeElement('input', 'save-file-input');
+  fileInput.type = 'file';
+  fileInput.accept = 'application/json,.json';
+  fileInput.setAttribute('aria-label', '選擇存檔 JSON 檔');
+  toolbar.append(product, settings, sources, exportButton, importButton, fileInput);
 
   const status = makeElement('div', 'map-status', '載入地圖資料中…');
   status.setAttribute('role', 'status');
+  const updateBanner = makeElement('section', 'update-banner');
+  updateBanner.hidden = true;
+  updateBanner.setAttribute('role', 'status');
+  updateBanner.append(makeElement('span', '', '有新版本，重新載入以更新'));
+  const updateButton = makeElement('button', 'source-button', '重新載入');
+  updateButton.type = 'button';
+  updateBanner.append(updateButton);
   const infoCard = makeElement('section', 'town-info');
   infoCard.hidden = true;
   infoCard.setAttribute('aria-live', 'polite');
   const infoText = makeElement('strong', 'town-info-text');
   infoCard.append(infoText);
 
-  mount.append(toolbar, status, infoCard);
-  return { infoCard, infoText, status, fpsSelect };
+  mount.append(toolbar, status, updateBanner, sourceDialog, infoCard);
+  return { infoCard, infoText, status, fpsSelect, updateBanner, updateButton, fileInput };
 }
 
 function initialFpsSetting(): FpsSetting {
@@ -136,6 +167,45 @@ async function startApp(): Promise<void> {
   const mount = document.querySelector<HTMLElement>('#app');
   if (!mount) throw new Error('Missing #app mount element');
   const ui = createUi(mount);
+  const saveStorage = new IndexedDbSaveStorage();
+  const currentP0Payload = (): Record<string, unknown> => ({
+    camera: { x: 0, y: 0, zoom: 1 },
+    simulation: { tick: 0, running: false },
+  });
+  const showStatus = (message: string): void => {
+    ui.status.textContent = message;
+    ui.status.hidden = false;
+  };
+  const exportButton = mount.querySelector<HTMLButtonElement>('[data-action="export-save"]');
+  const importButton = mount.querySelector<HTMLButtonElement>('[data-action="import-save"]');
+  exportButton?.addEventListener('click', () => {
+    void (async () => {
+      const record = await loadSave(saveStorage) ?? await savePayload(saveStorage, currentP0Payload());
+      triggerSaveDownload(record);
+      showStatus('存檔已匯出。');
+    })().catch((error: unknown) => {
+      console.error('Unable to export save', error);
+      showStatus('匯出存檔失敗，請稍後再試。');
+    });
+  });
+  importButton?.addEventListener('click', () => ui.fileInput.click());
+  ui.fileInput.addEventListener('change', () => {
+    const file = ui.fileInput.files?.[0];
+    if (!file) return;
+    void importSaveFile(file).then(async (record) => {
+      await saveStorage.write(record);
+      showStatus('存檔已匯入。');
+    }).catch((error: unknown) => {
+      showStatus(error instanceof Error ? error.message : '匯入存檔失敗。');
+    }).finally(() => {
+      ui.fileInput.value = '';
+    });
+  });
+  registerServiceWorker((activateUpdate) => {
+    ui.updateBanner.hidden = false;
+    ui.updateButton.onclick = activateUpdate;
+  });
+  void requestPersistentStorage();
   selectedFpsSetting = initialFpsSetting();
   ui.fpsSelect.value = String(selectedFpsSetting);
   ui.fpsSelect.addEventListener('change', () => {
@@ -163,6 +233,11 @@ async function startApp(): Promise<void> {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) pixiApp.ticker.stop();
     else pixiApp.ticker.start();
+    if (document.hidden) {
+      void savePayload(saveStorage, currentP0Payload()).catch((error: unknown) => {
+        console.info('Autosave could not be written.', error);
+      });
+    }
   });
 
   const loader = new MapDataLoader(import.meta.env.BASE_URL);
