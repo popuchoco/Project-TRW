@@ -1,4 +1,4 @@
-import { buildCacheNames } from "./cache";
+import { buildCacheNames, CACHE_MATCH_OPTIONS } from "./cache";
 import { classifyRequest } from "./routes";
 
 const APP_VERSION = "__TRW_APP_CACHE_VERSION__";
@@ -57,7 +57,7 @@ worker.addEventListener("fetch", (event) => {
 
   fetchEvent.respondWith((async () => {
     const cacheKey = route === "navigation" ? indexUrl : fetchEvent.request;
-    const cached = await caches.match(cacheKey);
+    const cached = await caches.match(cacheKey, CACHE_MATCH_OPTIONS);
     if (cached) return cached;
 
     try {
@@ -70,7 +70,7 @@ worker.addEventListener("fetch", (event) => {
     } catch (error) {
       if (route === "navigation") {
         const shell = await caches.open(CACHE_NAMES.shell);
-        const offlinePage = await shell.match(indexUrl);
+        const offlinePage = await shell.match(indexUrl, CACHE_MATCH_OPTIONS);
         if (offlinePage) return offlinePage;
       }
       throw error;

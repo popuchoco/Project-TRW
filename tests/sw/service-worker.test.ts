@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCacheNames } from "../../src/sw/cache";
+import { buildCacheNames, CACHE_MATCH_OPTIONS } from "../../src/sw/cache";
 import { buildPrecacheList } from "../../src/sw/precache";
 import { classifyRequest } from "../../src/sw/routes";
 
@@ -9,6 +9,12 @@ describe("service worker cache names", () => {
       shell: "trw-shell-v0.0.0-d1140318",
       runtime: "trw-runtime-v0.0.0-d1140318",
     });
+  });
+});
+
+describe("service worker cache matching", () => {
+  it("ignores Vary so precached crossorigin module scripts match offline", () => {
+    expect(CACHE_MATCH_OPTIONS).toEqual({ ignoreVary: true });
   });
 });
 
