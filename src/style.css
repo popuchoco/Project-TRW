@@ -1,3 +1,11 @@
+:root {
+  font-family: Inter, "Noto Sans TC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #25313c;
+  background: #f4f6f8;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -12,11 +20,219 @@ body,
 }
 
 body {
+  min-width: 320px;
   background: #f4f6f8;
 }
 
+#app {
+  position: relative;
+  isolation: isolate;
+}
+
 #app canvas {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
+  touch-action: none;
+}
+
+.map-toolbar {
+  position: absolute;
+  z-index: 2;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 11px;
+  border: 1px solid rgb(103 119 128 / 18%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 91%);
+  box-shadow: 0 2px 12px rgb(31 47 56 / 8%);
+  backdrop-filter: blur(8px);
+}
+
+.map-brand {
+  display: grid;
+  gap: 1px;
+}
+
+.map-title {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.map-subtitle {
+  color: #69767d;
+  font-size: 11px;
+}
+
+.fps-setting {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #59666d;
+  font-size: 11px;
+}
+
+.fps-select,
+.sim-speed-select,
+.source-button {
+  min-height: 30px;
+  border: 1px solid #d4dadd;
+  border-radius: 6px;
+  background: #fff;
+  color: #344149;
+  font: inherit;
+  font-size: 12px;
+}
+
+.fps-select,
+.sim-speed-select {
+  padding: 3px 6px;
+}
+
+.source-button {
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.source-button:hover,
+.fps-select:hover,
+.sim-speed-select:hover {
+  border-color: #9eacb2;
+}
+
+.save-file-input {
+  display: none;
+}
+
+.source-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 18px;
+  border: 1px solid #d4dadd;
+  border-radius: 10px;
+  color: #344149;
+  box-shadow: 0 8px 32px rgb(31 47 56 / 18%);
+}
+
+.source-dialog::backdrop {
+  background: rgb(31 47 56 / 32%);
+}
+
+.source-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.source-dialog p {
+  margin: 0 0 16px;
+  color: #536168;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.update-banner {
+  position: absolute;
+  z-index: 3;
+  top: 14px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  transform: translateX(-50%);
+  border: 1px solid rgb(103 119 128 / 18%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 95%);
+  color: #344149;
+  font-size: 12px;
+  box-shadow: 0 2px 12px rgb(31 47 56 / 8%);
+  white-space: nowrap;
+}
+
+.map-status {
+  position: absolute;
+  z-index: 2;
+  top: 76px;
+  left: 16px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 91%);
+  color: #536168;
+  font-size: 12px;
+  box-shadow: 0 1px 8px rgb(31 47 56 / 8%);
+}
+
+.town-info {
+  position: absolute;
+  z-index: 2;
+  right: 50%;
+  bottom: 18px;
+  max-width: calc(100vw - 28px);
+  padding: 11px 16px;
+  transform: translateX(50%);
+  border: 1px solid rgb(63 91 103 / 20%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 95%);
+  color: #293a42;
+  box-shadow: 0 3px 14px rgb(31 47 56 / 12%);
+  pointer-events: none;
+}
+
+.town-info-text {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (max-width: 560px) {
+  .map-toolbar {
+    top: 8px;
+    left: 8px;
+    max-width: calc(100vw - 16px);
+    gap: 9px;
+    padding: 7px 8px;
+  }
+
+  .map-subtitle {
+    display: none;
+  }
+
+  .source-button {
+    padding-inline: 6px;
+  }
+
+  .map-status {
+    top: 106px;
+    left: 9px;
+  }
+
+  .update-banner {
+    top: auto;
+    right: 8px;
+    bottom: 64px;
+    left: auto;
+    max-width: calc(100vw - 16px);
+    transform: none;
+  }
+
+  .town-info {
+    bottom: 10px;
+    padding: 9px 12px;
+  }
+
+  .town-info-text {
+    font-size: 12px;
+  }
 }
