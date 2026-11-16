@@ -182,6 +182,11 @@ export class MapRenderer {
     this.updateCameraDisplay();
   }
 
+  setCameraView(x: number, y: number, zoom: number): void {
+    this.camera.setView(x, y, zoom);
+    this.updateCameraDisplay();
+  }
+
   setSimulationMarker(lon: number, lat: number): void {
     this.simulationPosition = [lon, lat];
     this.positionSimulationMarker();

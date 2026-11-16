@@ -1,5 +1,5 @@
 import { FixedStepClock } from './clock';
-import { createSim, snapshotOf, step, type SimState } from './core';
+import { createSim, resumeSim, snapshotOf, step, type SimState } from './core';
 import { IntervalScheduler } from './interval-scheduler';
 import { isMainToWorkerMessage, type MainToWorkerMessage, type WorkerToMainMessage } from './protocol';
 
@@ -34,10 +34,11 @@ scope.onmessage = (event: MessageEvent<unknown>): void => {
   const message: MainToWorkerMessage = event.data;
   if (message.type === 'start') {
     if (state) return;
-    state = createSim(message.seed);
-    clock.setPaused(false);
+    state = message.state ? resumeSim(message.state) : createSim(message.seed);
+    if (message.speed !== undefined) clock.setSpeed(message.speed);
+    clock.setPaused(message.paused ?? false);
     postSnapshot();
-    pumpScheduler.start();
+    if (!clock.paused) pumpScheduler.start();
     return;
   }
   if (!state) return;

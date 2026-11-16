@@ -1,5 +1,5 @@
 import { FIXED_TICK_MS, type SimSpeed } from './clock';
-import type { EntityState, SimSnapshot } from './core';
+import { createSim, resumeSim, type EntityState, type SimContinuationState, type SimSnapshot, type SimState } from './core';
 import { interpolateSnapshots } from './interpolate';
 import type { WorkerToMainMessage } from './protocol';
 import { isWorkerToMainMessage } from './protocol';
@@ -16,6 +16,16 @@ export interface SimStatus {
   speed: SimSpeed;
 }
 
+export interface SimClientSaveState extends SimContinuationState {
+  speed: SimSpeed;
+  paused: boolean;
+}
+
+export interface SimStartOptions {
+  speed?: SimSpeed;
+  paused?: boolean;
+}
+
 export class SimClient {
   private readonly worker: Worker;
   private snapshots: TimedSnapshot[] = [];
@@ -24,15 +34,25 @@ export class SimClient {
   private renderAnchorMs = 0;
   private renderAnchorAt = 0;
   private frozenRenderTimeMs?: number;
+  private initialState?: SimState;
 
   constructor(private readonly onSnapshot: ((snapshot: SimSnapshot) => void) | undefined, private readonly now: () => number) {
     this.worker = new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' });
     this.worker.addEventListener('message', this.handleMessage);
   }
 
-  start(seed: number): void {
-    this.currentPaused = false;
-    this.worker.postMessage({ type: 'start', seed });
+  start(seed: number, continuation?: SimContinuationState, options: SimStartOptions = {}): void {
+    this.initialState = continuation ? resumeSim(continuation) : createSim(seed);
+    this.currentPaused = options.paused ?? false;
+    this.currentSpeed = options.speed ?? 1;
+    const { rngState, seq, gameTimeMs, routeProgress } = this.initialState;
+    this.worker.postMessage({
+      type: 'start',
+      seed: this.initialState.seed,
+      state: { seed: this.initialState.seed, rngState, seq, gameTimeMs, routeProgress },
+      paused: this.currentPaused,
+      speed: this.currentSpeed,
+    });
   }
 
   pause(now = this.now()): void {
@@ -66,6 +86,20 @@ export class SimClient {
       gameTimeMs: latest?.gameTimeMs ?? 0,
       paused: this.currentPaused,
       speed: this.currentSpeed,
+    };
+  }
+
+  getSaveState(): SimClientSaveState {
+    const snapshot = this.latest()?.snapshot;
+    const state = snapshot ?? this.initialState ?? createSim(0);
+    return {
+      seed: state.seed,
+      rngState: state.rngState,
+      seq: state.seq,
+      gameTimeMs: state.gameTimeMs,
+      routeProgress: state.routeProgress,
+      speed: this.currentSpeed,
+      paused: this.currentPaused,
     };
   }
 

@@ -1,6 +1,38 @@
-export const CURRENT_SCHEMA_VERSION = 1;
-export const MAX_SAVE_BYTES = 1024 * 1024;
+import type { Network } from "../city/network";
+import type { SimSpeed } from "../sim/clock";
+
+export const CURRENT_SCHEMA_VERSION = 2;
+export const MAX_SAVE_BYTES = 4 * 1024 * 1024;
 export const MAX_OFFLINE_ELAPSED_MS = 8 * 60 * 60 * 1000;
+
+export type SaveView = "island" | "metro";
+
+export interface SaveCamera {
+  /** Projected world coordinate at the center of the view. */
+  x: number;
+  y: number;
+  /** Zoom relative to the map's fit scale. */
+  zoom: number;
+}
+
+export interface SaveSimulationState {
+  gameTimeMs: number;
+  speed: SimSpeed;
+  paused: boolean;
+  seed: number;
+  rngState: number;
+  seq: number;
+  routeProgress: number;
+}
+
+export interface SavePayloadV2 extends Record<string, unknown> {
+  network: Network;
+  camera: SaveCamera;
+  view: SaveView;
+  simulation: SaveSimulationState;
+  /** Small numeric summary fields supplied by the active simulation. */
+  stats: Record<string, number>;
+}
 
 export interface SaveRecord {
   schemaVersion: number;

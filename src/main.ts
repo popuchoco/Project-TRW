@@ -4,10 +4,14 @@ import type { LodId } from './map/lod';
 import { MapRenderer } from './render/MapRenderer';
 import { importSaveFile, triggerSaveDownload } from './save/import-export';
 import { IndexedDbSaveStorage } from './save/storage';
-import { loadSave, savePayload } from './save/save';
+import { loadSave } from './save/save';
 import { requestPersistentStorage } from './save/persistence';
+import { saveCurrentState, type SaveStateProviders } from './save/state';
+import type { SavePayloadV2 } from './save/types';
 import { registerServiceWorker } from './sw/register';
 import { SimClient } from './sim/client';
+import { createSim } from './sim/core';
+import { createEmptyNetwork } from './city/network';
 import type { SimSpeed } from './sim/clock';
 import type { TownFeature } from './map/hit';
 import './style.css';
@@ -192,13 +196,36 @@ async function startApp(): Promise<void> {
   if (!mount) throw new Error('Missing #app mount element');
   const ui = createUi(mount);
   const saveStorage = new IndexedDbSaveStorage();
-  const currentP0Payload = (): Record<string, unknown> => ({
-    camera: { x: 0, y: 0, zoom: 1 },
-    simulation: (() => {
-      const sim = simulationClient?.getStatus() ?? { seq: 0, gameTimeMs: 0, paused: true, speed: selectedSimSpeed };
-      return { tick: sim.seq, gameTimeMs: sim.gameTimeMs, running: !sim.paused };
-    })(),
-  });
+  let restoredPayload: SavePayloadV2 | undefined;
+  try {
+    const savedRecord = await loadSave(saveStorage);
+    restoredPayload = savedRecord?.payload as SavePayloadV2 | undefined;
+  } catch (error) {
+    console.info('Saved game could not be loaded; starting with a fresh session.', error);
+  }
+  if (restoredPayload) selectedSimSpeed = restoredPayload.simulation.speed;
+  const currentNetwork = restoredPayload?.network ?? createEmptyNetwork();
+  const freshSimulation = createSim(0x545257);
+  const saveStateProviders: SaveStateProviders = {
+    getNetwork: () => currentNetwork,
+    getCamera: () => {
+      const camera = mapRenderer?.camera;
+      return camera
+        ? { x: camera.center.x, y: camera.center.y, zoom: camera.zoom }
+        : restoredPayload?.camera ?? { x: 0, y: 0, zoom: 1 };
+    },
+    getView: () => 'island',
+    getSimulation: () => simulationClient?.getSaveState() ?? restoredPayload?.simulation ?? {
+      gameTimeMs: freshSimulation.gameTimeMs,
+      speed: selectedSimSpeed,
+      paused: true,
+      seed: freshSimulation.seed,
+      rngState: freshSimulation.rngState,
+      seq: freshSimulation.seq,
+      routeProgress: freshSimulation.routeProgress,
+    },
+    getStats: () => restoredPayload?.stats ?? {},
+  };
   const showStatus = (message: string): void => {
     ui.status.textContent = message;
     ui.status.hidden = false;
@@ -207,7 +234,7 @@ async function startApp(): Promise<void> {
   const importButton = mount.querySelector<HTMLButtonElement>('[data-action="import-save"]');
   exportButton?.addEventListener('click', () => {
     void (async () => {
-      const record = await loadSave(saveStorage) ?? await savePayload(saveStorage, currentP0Payload());
+      const record = await saveCurrentState(saveStorage, saveStateProviders);
       triggerSaveDownload(record);
       showStatus('存檔已匯出。');
     })().catch((error: unknown) => {
@@ -288,7 +315,7 @@ async function startApp(): Promise<void> {
       updateSimulationUi();
     }
     if (document.hidden) {
-      void savePayload(saveStorage, currentP0Payload()).catch((error: unknown) => {
+      void saveCurrentState(saveStorage, saveStateProviders).catch((error: unknown) => {
         console.info('Autosave could not be written.', error);
       });
     }
@@ -371,6 +398,9 @@ async function startApp(): Promise<void> {
     },
   );
   mapRenderer = renderer;
+  if (restoredPayload) {
+    renderer.setCameraView(restoredPayload.camera.x, restoredPayload.camera.y, restoredPayload.camera.zoom);
+  }
 
   currentLodForStats = renderer.currentLod;
   visibleCountyCount = renderer.countiesInView.length;
@@ -381,8 +411,12 @@ async function startApp(): Promise<void> {
   resolveReady?.();
 
   simulationClient = new SimClient(undefined, () => performance.now());
-  simulationClient.start(0x545257);
-  if (selectedSimSpeed !== 1) simulationClient.setSpeed(selectedSimSpeed);
+  const restoredSimulation = restoredPayload?.simulation;
+  simulationClient.start(restoredSimulation?.seed ?? 0x545257, restoredSimulation, {
+    speed: restoredSimulation?.speed ?? selectedSimSpeed,
+    paused: restoredSimulation?.paused ?? false,
+  });
+  ui.simSpeedSelect.value = String(selectedSimSpeed);
   if (document.hidden) {
     automaticPauseOnHide = true;
     simulationClient.pause();
