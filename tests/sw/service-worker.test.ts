@@ -48,4 +48,9 @@ describe("precache list", () => {
     const list = buildPrecacheList(["./index.html", "./assets/app.js", "./assets/app.js"]);
     expect(list.filter((path) => path === "./assets/app.js")).toHaveLength(1);
   });
+
+  it("precaches emitted JavaScript worker assets", () => {
+    const list = buildPrecacheList(["./assets/index-abcd.js", "./assets/sim.worker-1234.js"]);
+    expect(list).toContain("./assets/sim.worker-1234.js");
+  });
 });

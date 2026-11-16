@@ -74,7 +74,16 @@ export class MapRenderer {
   private readonly selectionRoot = new Container();
   private readonly screenRoot = new Container();
   private readonly labelsRoot = new Container();
+  private readonly simulationRoot = new Container();
   private readonly insetsRoot = new Container();
+  private readonly simulationMarker = new Graphics()
+    .circle(0, 0, 7)
+    .fill({ color: 0xffffff, alpha: 0.92 })
+    .circle(0, 0, 4.5)
+    .fill(0x167a9a)
+    .circle(0, 0, 4.5)
+    .stroke({ color: 0xffffff, width: 1.4 });
+  private simulationPosition?: [number, number];
   private readonly layers = new Map<LodId, CountyLayers>();
   private readonly featureSets = new Map<LodId, Map<string, TownFeature[]>>();
   private readonly lod3Features = new Map<string, TownFeature[]>();
@@ -106,7 +115,8 @@ export class MapRenderer {
     this.camera = new MapCamera(app.screen.width, app.screen.height, this.mainBounds());
     this.townBounds = new QuadTree(manifest.towns, (town) => town.bbox);
     this.app.stage.addChild(this.mapRoot, this.selectionRoot, this.screenRoot);
-    this.screenRoot.addChild(this.labelsRoot, this.insetsRoot);
+    this.screenRoot.addChild(this.labelsRoot, this.simulationRoot, this.insetsRoot);
+    this.simulationRoot.addChild(this.simulationMarker);
     this.setLodFeatures('lod0', initialFeatures);
     this.installPointerHandlers();
     window.addEventListener('resize', this.onResize);
@@ -171,6 +181,11 @@ export class MapRenderer {
     this.updateCameraDisplay();
   }
 
+  setSimulationMarker(lon: number, lat: number): void {
+    this.simulationPosition = [lon, lat];
+    this.positionSimulationMarker();
+  }
+
   hitTown(lon: number, lat: number): TownFeature | undefined {
     for (const countyCode of this.lod3Indexes.keys()) {
       const hit = lookupTownIndexed(this.lod3Indexes.get(countyCode)!, lon, lat);
@@ -229,7 +244,14 @@ export class MapRenderer {
       .filter((code, index, codes) => codes.indexOf(code) === index);
     this.refreshVisibility();
     this.positionCountyLabels();
+    this.positionSimulationMarker();
     this.onViewChange(this.desiredLod, this.visibleCountyCodes, this.camera.zoom);
+  }
+
+  private positionSimulationMarker(): void {
+    if (!this.simulationPosition) return;
+    const position = this.camera.lonLatToScreen(this.simulationPosition);
+    this.simulationMarker.position.set(position.x, position.y);
   }
 
   private refreshVisibility(): void {

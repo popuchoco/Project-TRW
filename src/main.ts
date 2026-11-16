@@ -7,6 +7,8 @@ import { IndexedDbSaveStorage } from './save/storage';
 import { loadSave, savePayload } from './save/save';
 import { requestPersistentStorage } from './save/persistence';
 import { registerServiceWorker } from './sw/register';
+import { SimClient } from './sim/client';
+import type { SimSpeed } from './sim/clock';
 import type { TownFeature } from './map/hit';
 import './style.css';
 
@@ -26,6 +28,7 @@ interface TrwDebug {
   panBy(dx: number, dy: number): void;
   zoomAt(factor: number, x: number, y: number): void;
   setFpsCap(cap: FpsSetting): void;
+  getSim(): { seq: number; gameTimeMs: number; paused: boolean; speed: SimSpeed };
 }
 
 declare global {
@@ -43,6 +46,9 @@ let resolveReady: (() => void) | undefined;
 let currentLodForStats: LodId | 'loading' = 'loading';
 let visibleCountyCount = 0;
 let firstMapMs: number | undefined;
+let simulationClient: SimClient | undefined;
+let automaticPauseOnHide = false;
+let selectedSimSpeed: SimSpeed = 1;
 
 const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
 window.__TRW__ = {
@@ -56,6 +62,7 @@ window.__TRW__ = {
   panBy: (dx, dy) => mapRenderer?.panBy(dx, dy),
   zoomAt: (factor, x, y) => mapRenderer?.zoomAt(factor, x, y),
   setFpsCap: (cap) => setFpsSetting(cap),
+  getSim: () => simulationClient?.getStatus() ?? { seq: 0, gameTimeMs: 0, paused: true, speed: selectedSimSpeed },
 };
 
 function makeElement<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
@@ -70,6 +77,8 @@ function createUi(mount: HTMLElement): {
   infoText: HTMLElement;
   status: HTMLElement;
   fpsSelect: HTMLSelectElement;
+  simPauseButton: HTMLButtonElement;
+  simSpeedSelect: HTMLSelectElement;
   updateBanner: HTMLElement;
   updateButton: HTMLButtonElement;
   fileInput: HTMLInputElement;
@@ -89,6 +98,21 @@ function createUi(mount: HTMLElement): {
     fpsSelect.append(option);
   }
   settings.append(fpsSelect);
+
+  const simPauseButton = makeElement('button', 'source-button', '暫停模擬');
+  simPauseButton.type = 'button';
+  simPauseButton.dataset.action = 'toggle-simulation';
+  const simSpeedSetting = makeElement('label', 'fps-setting');
+  simSpeedSetting.append(makeElement('span', '', '模擬速度'));
+  const simSpeedSelect = makeElement('select', 'sim-speed-select');
+  simSpeedSelect.setAttribute('aria-label', '模擬速度');
+  for (const [value, label] of [[1, '1×'], [2, '2×'], [4, '4×']] as const) {
+    const option = document.createElement('option');
+    option.value = String(value);
+    option.textContent = label;
+    simSpeedSelect.append(option);
+  }
+  simSpeedSetting.append(simSpeedSelect);
 
   const sources = makeElement('button', 'source-button', '資料來源');
   sources.type = 'button';
@@ -113,7 +137,7 @@ function createUi(mount: HTMLElement): {
   fileInput.type = 'file';
   fileInput.accept = 'application/json,.json';
   fileInput.setAttribute('aria-label', '選擇存檔 JSON 檔');
-  toolbar.append(product, settings, sources, exportButton, importButton, fileInput);
+  toolbar.append(product, settings, simPauseButton, simSpeedSetting, sources, exportButton, importButton, fileInput);
 
   const status = makeElement('div', 'map-status', '載入地圖資料中…');
   status.setAttribute('role', 'status');
@@ -131,7 +155,7 @@ function createUi(mount: HTMLElement): {
   infoCard.append(infoText);
 
   mount.append(toolbar, status, updateBanner, sourceDialog, infoCard);
-  return { infoCard, infoText, status, fpsSelect, updateBanner, updateButton, fileInput };
+  return { infoCard, infoText, status, fpsSelect, simPauseButton, simSpeedSelect, updateBanner, updateButton, fileInput };
 }
 
 function initialFpsSetting(): FpsSetting {
@@ -170,7 +194,10 @@ async function startApp(): Promise<void> {
   const saveStorage = new IndexedDbSaveStorage();
   const currentP0Payload = (): Record<string, unknown> => ({
     camera: { x: 0, y: 0, zoom: 1 },
-    simulation: { tick: 0, running: false },
+    simulation: (() => {
+      const sim = simulationClient?.getStatus() ?? { seq: 0, gameTimeMs: 0, paused: true, speed: selectedSimSpeed };
+      return { tick: sim.seq, gameTimeMs: sim.gameTimeMs, running: !sim.paused };
+    })(),
   });
   const showStatus = (message: string): void => {
     ui.status.textContent = message;
@@ -212,6 +239,24 @@ async function startApp(): Promise<void> {
     const value = ui.fpsSelect.value;
     setFpsSetting(value === '30' ? 30 : value === '60' ? 60 : 'auto');
   });
+  const updateSimulationUi = (): void => {
+    const status = simulationClient?.getStatus();
+    ui.simPauseButton.textContent = status?.paused ? '繼續模擬' : '暫停模擬';
+    ui.simPauseButton.setAttribute('aria-pressed', String(Boolean(status?.paused)));
+  };
+  ui.simPauseButton.addEventListener('click', () => {
+    if (!simulationClient) return;
+    if (simulationClient.getStatus().paused) simulationClient.resume();
+    else simulationClient.pause();
+    updateSimulationUi();
+  });
+  ui.simSpeedSelect.value = String(selectedSimSpeed);
+  ui.simSpeedSelect.addEventListener('change', () => {
+    const value = Number(ui.simSpeedSelect.value);
+    if (value !== 1 && value !== 2 && value !== 4) return;
+    selectedSimSpeed = value;
+    simulationClient?.setSpeed(value);
+  });
 
   const pixiApp = new Application();
   app = pixiApp;
@@ -233,6 +278,15 @@ async function startApp(): Promise<void> {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) pixiApp.ticker.stop();
     else pixiApp.ticker.start();
+    if (document.hidden && simulationClient && !simulationClient.getStatus().paused) {
+      automaticPauseOnHide = true;
+      simulationClient.pause();
+      updateSimulationUi();
+    } else if (!document.hidden && automaticPauseOnHide) {
+      automaticPauseOnHide = false;
+      simulationClient?.resume();
+      updateSimulationUi();
+    }
     if (document.hidden) {
       void savePayload(saveStorage, currentP0Payload()).catch((error: unknown) => {
         console.info('Autosave could not be written.', error);
@@ -325,6 +379,19 @@ async function startApp(): Promise<void> {
   pixiApp.renderer.render(pixiApp.stage);
   firstMapMs = performance.now() - startedAt;
   resolveReady?.();
+
+  simulationClient = new SimClient();
+  simulationClient.start(0x545257);
+  if (selectedSimSpeed !== 1) simulationClient.setSpeed(selectedSimSpeed);
+  if (document.hidden) {
+    automaticPauseOnHide = true;
+    simulationClient.pause();
+  }
+  pixiApp.ticker.add(() => {
+    const entity = simulationClient?.getInterpolatedEntities()[0];
+    if (entity) renderer.setSimulationMarker(entity.lon, entity.lat);
+  });
+  updateSimulationUi();
   pixiApp.ticker.start();
   ui.status.hidden = true;
 

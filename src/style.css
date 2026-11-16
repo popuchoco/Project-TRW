@@ -79,6 +79,7 @@ body {
 }
 
 .fps-select,
+.sim-speed-select,
 .source-button {
   min-height: 30px;
   border: 1px solid #d4dadd;
@@ -89,7 +90,8 @@ body {
   font-size: 12px;
 }
 
-.fps-select {
+.fps-select,
+.sim-speed-select {
   padding: 3px 6px;
 }
 
@@ -99,7 +101,8 @@ body {
 }
 
 .source-button:hover,
-.fps-select:hover {
+.fps-select:hover,
+.sim-speed-select:hover {
   border-color: #9eacb2;
 }
 

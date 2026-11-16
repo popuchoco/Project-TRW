@@ -18,7 +18,7 @@ function serviceWorkerPlugin(): Plugin {
       if (!worker || worker.type !== "chunk") throw new Error("Service worker entry was not emitted");
 
       const generatedAssets = Object.values(bundle)
-        .filter((output) => (output.type === "chunk" && output.name !== "sw") || (output.type === "asset" && /\.css$/i.test(output.fileName)))
+        .filter((output) => (output.type === "chunk" && output.name !== "sw") || (output.type === "asset" && /\.(?:css|js)$/i.test(output.fileName)))
         .map((output) => `./${output.fileName}`);
       const precache = buildPrecacheList(generatedAssets);
       worker.code = worker.code.replace(
