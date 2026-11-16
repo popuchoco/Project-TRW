@@ -70,6 +70,12 @@ export interface LodManifest {
   vertexCount: number;
 }
 
+export interface InsetAssetManifestEntry extends AssetFile {
+  vertexCount: number;
+  simplifyPct: number;
+  quantization: number;
+}
+
 export interface TownManifestEntry {
   code: string;
   countyCode: string;
@@ -94,6 +100,12 @@ export interface InsetManifestEntry {
   partCount: number;
 }
 
+export interface GeometryCounts {
+  partCount: number;
+  ringCount: number;
+  vertexCount: number;
+}
+
 export interface DataManifest {
   schemaVersion: number;
   dataVersion: string;
@@ -111,6 +123,7 @@ export interface DataManifest {
   };
   vertexCountMethod: string;
   lod3Layout: string;
+  insetAsset: InsetAssetManifestEntry;
   lods: LodManifest[];
   totals: Record<string, number>;
   towns: TownManifestEntry[];
@@ -126,9 +139,15 @@ export interface DataManifest {
   }>;
   splitAudit: {
     comparison: string;
-    towns: Record<string, unknown>;
-    rawTotals: Record<string, number>;
-    mainTotals: Record<string, number>;
-    insetTotals: Record<string, number>;
+    towns: Record<string, {
+      raw: GeometryCounts;
+      main: GeometryCounts;
+      insets: Record<string, GeometryCounts>;
+      mainPlusInsets: GeometryCounts;
+      preserved: boolean;
+    }>;
+    rawTotals: GeometryCounts;
+    mainTotals: GeometryCounts;
+    insetTotals: GeometryCounts;
   };
 }

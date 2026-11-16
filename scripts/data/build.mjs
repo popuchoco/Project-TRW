@@ -21,6 +21,7 @@ const LODS = [
   { id: 'lod2', simplifyPct: 3 },
   { id: 'lod3', simplifyPct: 10 },
 ];
+const INSET_SIMPLIFY_PCT = 20;
 const EXPECTED_INSETS = {
   diaoyutai: { townCode: '10002040' },
   dongsha: { townCode: '64000100' },
@@ -181,15 +182,35 @@ async function simplifyCollection(collection, simplifyPct) {
   return { type: 'FeatureCollection', features };
 }
 
-async function toTopology(collection, inputName = 'simplified.geojson') {
+async function toTopology(collection, inputName = 'simplified.geojson', outputOptions = []) {
   const outputName = 'topology.json';
   const output = await mapshaper.applyCommands(
-    ['-i', inputName, '-o', 'format=topojson', 'quantization=100000', outputName],
+    ['-i', inputName, '-o', 'format=topojson', 'quantization=100000', ...outputOptions, outputName],
     { [inputName]: JSON.stringify(collection) },
   );
   assert(output[outputName], `Mapshaper did not return ${outputName}`);
   const topology = JSON.parse(output[outputName]);
   assert(topology.type === 'Topology' && topology.objects, 'Mapshaper produced an invalid TopoJSON topology');
+  return topology;
+}
+
+function quantizeTopology(topology, quantization) {
+  for (const arc of topology.arcs) {
+    let previousX = 0;
+    let previousY = 0;
+    for (const position of arc) {
+      const x = Math.round(position[0] * quantization);
+      const y = Math.round(position[1] * quantization);
+      position[0] = x - previousX;
+      position[1] = y - previousY;
+      previousX = x;
+      previousY = y;
+    }
+  }
+  topology.transform = {
+    scale: [1 / quantization, 1 / quantization],
+    translate: [0, 0],
+  };
   return topology;
 }
 
@@ -223,6 +244,30 @@ function topologyInsetIds(topology) {
   };
   for (const object of Object.values(topology.objects)) visit(object);
   return ids;
+}
+
+function topologyInsetCounts(topology) {
+  const counts = new Map();
+  const visit = (geometry) => {
+    if (!geometry) return;
+    if (geometry.type === 'GeometryCollection') {
+      for (const child of geometry.geometries) visit(child);
+      return;
+    }
+    const inset = geometry.properties?.inset;
+    if (!inset) return;
+    const current = counts.get(inset) ?? emptyCounts();
+    if (geometry.type === 'Polygon') {
+      current.partCount += 1;
+      current.ringCount += geometry.arcs.length;
+    } else if (geometry.type === 'MultiPolygon') {
+      current.partCount += geometry.arcs.length;
+      current.ringCount += geometry.arcs.reduce((sum, polygon) => sum + polygon.length, 0);
+    }
+    counts.set(inset, current);
+  };
+  for (const object of Object.values(topology.objects)) visit(object);
+  return counts;
 }
 
 async function writeTopology(path, topology) {
@@ -413,6 +458,49 @@ await rm(outputDir, { recursive: true, force: true });
 await mkdir(outputDir, { recursive: true });
 const lodEntries = [];
 
+const simplifiedInsets = await simplifyCollection(
+  { type: 'FeatureCollection', features: insetFeatures },
+  INSET_SIMPLIFY_PCT,
+);
+// A dataset-wide 100,000-step transform collapses some of these tiny islands.
+// Round the inset-only coordinates to a 1e-5 degree grid to retain every part.
+const insetTopology = quantizeTopology(await toTopology(simplifiedInsets, 'insets.geojson', [
+  'no-quantization',
+  'precision=0.00001',
+  'fix-geometry',
+]), 100000);
+assert(
+  JSON.stringify(topologyInsetIds(insetTopology).sort()) === JSON.stringify(Object.keys(EXPECTED_INSETS).sort()) &&
+    topologyTownCodes(insetTopology).length === 3,
+  'Inset topology must contain exactly the three inset features',
+);
+const topologyInsetAudit = topologyInsetCounts(insetTopology);
+for (const [id, expected] of Object.entries(EXPECTED_INSETS)) {
+  const actual = topologyInsetAudit.get(id);
+  const expectedCounts = splitAudit[expected.townCode]?.insets[id];
+  assert(
+    actual && expectedCounts && actual.partCount === expectedCounts.partCount && actual.ringCount === expectedCounts.ringCount,
+    `Inset topology ${id} changed part/ring counts from the split audit`,
+  );
+}
+for (const feature of simplifiedInsets.features) {
+  const insetId = feature.properties.inset;
+  const expected = splitAudit[feature.properties.TOWNCODE]?.insets[insetId];
+  assert(expected, `Missing split audit for inset ${insetId}`);
+  const actual = countsForGeometry(feature.geometry);
+  assert(
+    actual.partCount === expected.partCount && actual.ringCount === expected.ringCount,
+    `Inset ${insetId} changed part/ring counts from the split audit ` +
+      `(parts ${actual.partCount}/${expected.partCount}, rings ${actual.ringCount}/${expected.ringCount})`,
+  );
+}
+const insetAsset = {
+  ...await writeTopology('trw-1140318-insets.topo.json', insetTopology),
+  vertexCount: topologyVertexCount(insetTopology),
+  simplifyPct: INSET_SIMPLIFY_PCT,
+  quantization: 100000,
+};
+
 for (const lod of LODS) {
   const simplified = await simplifyCollection(combinedCollection, lod.simplifyPct);
   const files = [];
@@ -490,6 +578,7 @@ const manifest = {
   },
   vertexCountMethod: 'sum of stored TopoJSON arc positions across the listed files; county-split LOD3 counts each county file topology independently.',
   lod3Layout: '每個縣市各一個 TopoJSON 檔，該縣市的 inset feature 一併放入。',
+  insetAsset,
   lods: lodEntries,
   totals: {
     townCount: mainFeatures.length,
@@ -537,5 +626,8 @@ for (const [code, audit] of Object.entries(splitAudit)) {
       `${Object.values(audit.insets).reduce(addCounts, emptyCounts()).vertexCount}\n`,
   );
 }
-const totalBytes = lodEntries.flatMap((lod) => lod.files).reduce((sum, file) => sum + file.bytes, manifestBuffer.byteLength);
+const totalBytes = lodEntries.flatMap((lod) => lod.files).reduce(
+  (sum, file) => sum + file.bytes,
+  manifestBuffer.byteLength + insetAsset.bytes,
+);
 process.stdout.write(`Total generated data size including manifest: ${totalBytes.toLocaleString()} bytes.\n`);

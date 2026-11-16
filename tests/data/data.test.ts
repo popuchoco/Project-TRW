@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { bboxForGeometry, pointInMultiPolygon } from '../../src/map/geo';
 import { lookupTown } from '../../src/map/hit';
@@ -20,6 +21,10 @@ function readLodFeatures(lodId: DataManifest['lods'][number]['id']): GeoFeature<
   return lod.files.flatMap(({ path }) => decodeTopology(readTopology(path)));
 }
 
+function readInsetFeatures(): GeoFeature<TownProperties>[] {
+  return decodeTopology(readTopology(manifest.insetAsset.path));
+}
+
 function countArcPositions(topology: Topology): number {
   return topology.arcs.reduce((count, arc) => count + arc.length, 0);
 }
@@ -33,7 +38,8 @@ describe('generated Taiwan administrative map data', () => {
   const lod1Features = readLodFeatures('lod1');
   const mainTowns = lod0Features.filter(({ properties }) => !properties.inset);
   const lod1MainTowns = lod1Features.filter(({ properties }) => !properties.inset);
-  const insetFeatures = lod0Features.filter(({ properties }) => properties.inset);
+  const lod0InsetFeatures = lod0Features.filter(({ properties }) => properties.inset);
+  const insetFeatures = readInsetFeatures();
 
   it('contains 368 unique towns, 22 counties and the required town suffix totals', () => {
     expect(mainTowns).toHaveLength(368);
@@ -55,20 +61,26 @@ describe('generated Taiwan administrative map data', () => {
   });
 
   it('keeps the three inset features with the correct town ownership and locations', () => {
+    expect(lod0InsetFeatures).toHaveLength(3);
     expect(insetFeatures).toHaveLength(3);
     expect(manifest.insets).toHaveLength(3);
     const expected = new Map([
-      ['diaoyutai', '10002040'],
-      ['dongsha', '64000100'],
-      ['nansha', '64000100'],
+      ['diaoyutai', { townCode: '10002040', partCount: 100 }],
+      ['dongsha', { townCode: '64000100', partCount: 10 }],
+      ['nansha', { townCode: '64000100', partCount: 6 }],
     ]);
-    for (const [id, code] of expected) {
+    for (const [id, { townCode, partCount }] of expected) {
       const feature = insetFeatures.find(({ properties }) => properties.inset === id);
+      const lod0Feature = lod0InsetFeatures.find(({ properties }) => properties.inset === id);
       const inset = manifest.insets.find((entry) => entry.id === id);
-      expect(feature?.properties.TOWNCODE).toBe(code);
-      expect(inset?.townCode).toBe(code);
+      expect(feature?.properties.TOWNCODE).toBe(townCode);
+      expect(inset?.townCode).toBe(townCode);
       expect(inset?.partCount).toBeGreaterThan(0);
       expect(feature).toBeDefined();
+      expect(feature!.geometry.coordinates).toHaveLength(partCount);
+      expect(feature!.geometry.coordinates.reduce((count, polygon) => count + polygon.length, 0))
+        .toBe(manifest.splitAudit.towns[townCode]!.insets[id]!.ringCount);
+      expect(feature!.properties).toEqual(lod0Feature?.properties);
       expect(bboxForGeometry(feature!.geometry)[0]).toBeGreaterThan(inset!.bbox[0] - 0.02);
       expect(bboxForGeometry(feature!.geometry)[2]).toBeLessThan(inset!.bbox[2] + 0.02);
     }
@@ -140,6 +152,17 @@ describe('generated Taiwan administrative map data', () => {
         expect(createHash('sha256').update(bytes).digest('hex')).toBe(file.sha256);
       }
     }
+  });
+
+  it('matches inset asset metadata and vertex count to the dedicated topology', () => {
+    const bytes = readFileSync(resolve(dataDir, manifest.insetAsset.path));
+    const topology = readTopology(manifest.insetAsset.path);
+    expect(bytes.byteLength).toBe(manifest.insetAsset.bytes);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(manifest.insetAsset.sha256);
+    expect(gzipSync(bytes, { level: 9 }).byteLength).toBe(manifest.insetAsset.gzipBytes);
+    expect(countArcPositions(topology)).toBe(manifest.insetAsset.vertexCount);
+    expect(manifest.insetAsset.simplifyPct).toBe(20);
+    expect(manifest.insetAsset.quantization).toBe(100_000);
   });
 
   it('looks up the expected towns for Taipei Main Station, Magong and Jincheng', () => {
