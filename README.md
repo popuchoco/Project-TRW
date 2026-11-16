@@ -29,6 +29,8 @@ npm run build && npm run preview
 - `check` job 在每次 push／PR 執行：`npm ci` → `typecheck` → `lint` → `test` → `build`。用已 commit 的 LOD 資產，不連外。
 - `data` job 只在每週排程、手動觸發，或 `scripts/data/` 有變更時執行。原始 zip 依 `scripts/data/source.mjs` 的雜湊快取，所以平常不會連 TGOS。重建後的資產必須與 commit 版一致。下載失敗時改用已 commit 的資產跑測試並發出警告。
 
+已知 CI／開發依賴現況（記錄，不處理）：L6 的 `data` job `if` 只檢查 push commit，PR 事件不會執行該 job，此行為目前接受。L7 的 `mapshaper` 開發依賴樹有 `better-sqlite3` peer mismatch，且 `geographiclib` 已 deprecated；兩者只在開發工具依賴中，持續追蹤。
+
 ## Simulation worker
 
 `src/sim/` 是純 TypeScript（不依賴 DOM 或 PixiJS），可在 Node 測試。`sim.worker.ts` 以固定 10 Hz（每 tick 100 ms 遊戲時間）推進，支援暫停與 1×／2×／4×，並以 `postMessage` 傳送快照（序號、遊戲時間、實體）。主執行緒在兩個快照之間內插，P0 只有一個沿假路線移動的 dummy 標記。同 seed＋同輸入序列會得到同樣的快照序列。分頁隱藏時會暫停模擬與繪製。
@@ -51,7 +53,7 @@ Source data: 內政部國土測繪中心, 鄉鎮市區界線(TWD97經緯度), ve
 
 ## PWA and saves
 
-The app uses a hand-written service worker bundled from `src/sw/` to `dist/sw.js`. This avoids adding a PWA runtime or build dependency and keeps cache names and update behavior explicit. Cache names include the package version and boundary-data version (`1140318`); the shell precaches the app bundle, manifest, icons, data manifest, LOD0, LOD1, and inset topology. LOD2, LOD3, and other same-origin GET assets use a cache-first runtime cache. When a new worker is ready, the app offers a reload button and waits for the player to choose it.
+The app uses a hand-written service worker bundled from `src/sw/` to `dist/sw.js`. This avoids adding a PWA runtime or build dependency and keeps cache names and update behavior explicit. Shell and runtime cache names include the package version, town boundary version (`1140318`), village boundary and population versions (`1150817` and `11510`), and the first eight hex characters of SHA-256 over the build's precache URL list. Changing that list creates new cache names. The shell precaches the app bundle, manifest, icons, data manifest, LOD0, LOD1, and inset topology. LOD2, LOD3, the Taipei/New Taipei village topology and population JSON, and other same-origin GET assets enter a cache-first runtime cache when first requested; the village assets stay on-demand to avoid adding roughly 612 KiB to every initial shell download. On activation, the worker deletes other caches whose names start with `trw-` and keeps the current shell/runtime pair. When a new worker is ready, the app offers a reload button and waits for the player to choose it.
 
 Generate the two PNG install icons with the Node built-in-only script:
 

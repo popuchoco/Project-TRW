@@ -1,9 +1,25 @@
-export function buildCacheNames(appVersion: string, dataVersion: string): { shell: string; runtime: string } {
-  const suffix = `v${appVersion}-d${dataVersion}`;
+export interface CacheNamePair {
+  shell: string;
+  runtime: string;
+}
+
+export interface CacheStorageKeys {
+  keys(): Promise<string[]>;
+  delete(cacheName: string): Promise<boolean>;
+}
+
+export function buildCacheNames(appVersion: string, dataVersions: string, buildHash: string): CacheNamePair {
+  const suffix = `v${appVersion}-d${dataVersions}-b${buildHash}`;
   return {
     shell: `trw-shell-${suffix}`,
     runtime: `trw-runtime-${suffix}`,
   };
+}
+
+export async function deleteObsoleteTrwCaches(cacheStorage: CacheStorageKeys, currentNames: CacheNamePair): Promise<void> {
+  const current = new Set([currentNames.shell, currentNames.runtime]);
+  const obsolete = (await cacheStorage.keys()).filter((name) => name.startsWith("trw-") && !current.has(name));
+  await Promise.all(obsolete.map((name) => cacheStorage.delete(name)));
 }
 
 /**

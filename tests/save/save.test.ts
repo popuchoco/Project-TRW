@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { importSaveFile, importSaveJson } from "../../src/save/import-export";
 import { MigrationRegistry } from "../../src/save/migrations";
 import { loadSave, offlineElapsedMs, savePayload } from "../../src/save/save";
+import { IndexedDbSaveStorage } from "../../src/save/storage";
 import { CURRENT_SCHEMA_VERSION, FutureSaveVersionError, SaveMigrationError, type SaveRecord, type SaveStorage } from "../../src/save/types";
 
 class MemorySaveStorage implements SaveStorage {
@@ -73,4 +74,58 @@ describe("offline elapsed time", () => {
   it("preserves 7.9 hours", () => expect(offlineElapsedMs(7.9 * hour, 0)).toBe(7.9 * hour));
   it("preserves exactly eight hours", () => expect(offlineElapsedMs(8 * hour, 0)).toBe(8 * hour));
   it("caps thirty hours at eight hours", () => expect(offlineElapsedMs(30 * hour, 0)).toBe(8 * hour));
+});
+
+describe("IndexedDB save storage open lifecycle", () => {
+  function makeOpenRequest(database: IDBDatabase): IDBOpenDBRequest {
+    return { result: database, error: null } as unknown as IDBOpenDBRequest;
+  }
+
+  function storageWithRequests(requests: IDBOpenDBRequest[]): IndexedDbSaveStorage {
+    const factory = {
+      open: () => {
+        const database = { onversionchange: null, close: vi.fn() } as unknown as IDBDatabase;
+        const request = makeOpenRequest(database);
+        requests.push(request);
+        return request;
+      },
+    } as unknown as IDBFactory;
+    return new IndexedDbSaveStorage(factory);
+  }
+
+  function open(storage: IndexedDbSaveStorage): Promise<IDBDatabase> {
+    return (storage as unknown as { open(): Promise<IDBDatabase> }).open();
+  }
+
+  it("clears a failed open promise so a later call retries", async () => {
+    const requests: IDBOpenDBRequest[] = [];
+    const storage = storageWithRequests(requests);
+    const first = open(storage);
+    requests[0]!.onerror?.(new Event("error"));
+    await expect(first).rejects.toThrow("Unable to open save database");
+
+    const second = open(storage);
+    expect(requests).toHaveLength(2);
+    requests[1]!.onsuccess?.(new Event("success"));
+    await expect(second).resolves.toBe(requests[1]!.result);
+  });
+
+  it("waits through blocked upgrades and closes on version change", async () => {
+    const requests: IDBOpenDBRequest[] = [];
+    const storage = storageWithRequests(requests);
+    const pending = open(storage);
+    requests[0]!.onblocked?.(new Event("blocked") as IDBVersionChangeEvent);
+    const status = await Promise.race([pending.then(() => "settled", () => "settled"), Promise.resolve("pending")]);
+    expect(status).toBe("pending");
+
+    requests[0]!.onsuccess?.(new Event("success"));
+    const database = await pending;
+    database.onversionchange?.(new Event("versionchange") as IDBVersionChangeEvent);
+    expect((database.close as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
+
+    const reopened = open(storage);
+    expect(requests).toHaveLength(2);
+    requests[1]!.onsuccess?.(new Event("success"));
+    await expect(reopened).resolves.toBe(requests[1]!.result);
+  });
 });

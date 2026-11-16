@@ -1,5 +1,6 @@
 import { FixedStepClock } from './clock';
 import { createSim, snapshotOf, step, type SimState } from './core';
+import { IntervalScheduler } from './interval-scheduler';
 import { isMainToWorkerMessage, type MainToWorkerMessage, type WorkerToMainMessage } from './protocol';
 
 interface WorkerScope {
@@ -10,7 +11,7 @@ interface WorkerScope {
 const scope = globalThis as unknown as WorkerScope;
 const clock = new FixedStepClock({ maxCatchUpTicks: 5 });
 let state: SimState | undefined;
-let lastWallTime = 0;
+const PUMP_INTERVAL_MS = 16;
 
 function postSnapshot(): void {
   if (!state) return;
@@ -18,16 +19,15 @@ function postSnapshot(): void {
 }
 
 function pump(): void {
-  const now = performance.now();
-  const wallDelta = Math.max(0, now - lastWallTime);
-  lastWallTime = now;
-  const ticks = clock.advance(wallDelta);
+  const ticks = clock.advance(PUMP_INTERVAL_MS);
   for (let index = 0; index < ticks; index += 1) {
     if (!state) break;
     state = step(state);
     postSnapshot();
   }
 }
+
+const pumpScheduler = new IntervalScheduler(pump, PUMP_INTERVAL_MS);
 
 scope.onmessage = (event: MessageEvent<unknown>): void => {
   if (!isMainToWorkerMessage(event.data)) return;
@@ -36,22 +36,18 @@ scope.onmessage = (event: MessageEvent<unknown>): void => {
     if (state) return;
     state = createSim(message.seed);
     clock.setPaused(false);
-    lastWallTime = performance.now();
     postSnapshot();
-    setInterval(pump, 16);
+    pumpScheduler.start();
     return;
   }
   if (!state) return;
   if (message.type === 'pause') {
-    pump();
+    pumpScheduler.stop();
     clock.setPaused(true);
-    lastWallTime = performance.now();
   } else if (message.type === 'resume') {
-    pump();
-    lastWallTime = performance.now();
     clock.setPaused(false);
+    pumpScheduler.start();
   } else if (message.type === 'setSpeed') {
-    pump();
     clock.setSpeed(message.speed);
   }
 };

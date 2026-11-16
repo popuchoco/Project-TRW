@@ -380,7 +380,7 @@ async function startApp(): Promise<void> {
   firstMapMs = performance.now() - startedAt;
   resolveReady?.();
 
-  simulationClient = new SimClient();
+  simulationClient = new SimClient(undefined, () => performance.now());
   simulationClient.start(0x545257);
   if (selectedSimSpeed !== 1) simulationClient.setSpeed(selectedSimSpeed);
   if (document.hidden) {

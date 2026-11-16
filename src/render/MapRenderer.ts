@@ -6,6 +6,7 @@ import { QuadTree } from '../map/quadtree';
 import { project, projectBBox, unproject, type PlanePoint } from '../map/projection';
 import type { BBox, DataManifest, GeoFeature, TownProperties } from '../map/types';
 import { MapCamera, type ScreenPoint } from './camera';
+import { separatePolygonRings } from './polygon-rings';
 
 type CountyLayers = Map<string, Container>;
 type InsetId = 'diaoyutai' | 'dongsha' | 'nansha';
@@ -217,11 +218,16 @@ export class MapRenderer {
     const graphics = new Graphics();
     for (const feature of features) {
       for (const polygon of feature.geometry.coordinates) {
-        const outer = polygon[0];
-        if (!outer || outer.length < 3) continue;
+        const { outer, holes } = separatePolygonRings(polygon);
+        if (!outer) continue;
         graphics.poly(projectedRing(outer)).fill(colorForFeature(feature));
+        // 太麻里鄉有兩個內環；Pixi v8 cut() subtracts them from the fill so the map shows through.
+        if (holes.length > 0) {
+          for (const hole of holes) graphics.poly(projectedRing(hole));
+          graphics.cut();
+        }
         graphics.poly(projectedRing(outer)).stroke({ color: 0xb6b9b4, width: 0.8, pixelLine: true });
-        for (const hole of polygon.slice(1)) {
+        for (const hole of holes) {
           graphics.poly(projectedRing(hole)).stroke({ color: 0xb6b9b4, width: 0.8, pixelLine: true });
         }
       }

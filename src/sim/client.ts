@@ -25,7 +25,7 @@ export class SimClient {
   private renderAnchorAt = 0;
   private frozenRenderTimeMs?: number;
 
-  constructor(private readonly onSnapshot?: (snapshot: SimSnapshot) => void) {
+  constructor(private readonly onSnapshot: ((snapshot: SimSnapshot) => void) | undefined, private readonly now: () => number) {
     this.worker = new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' });
     this.worker.addEventListener('message', this.handleMessage);
   }
@@ -35,14 +35,14 @@ export class SimClient {
     this.worker.postMessage({ type: 'start', seed });
   }
 
-  pause(now = performance.now()): void {
+  pause(now = this.now()): void {
     if (this.currentPaused) return;
     this.frozenRenderTimeMs = this.renderTimeAt(now);
     this.currentPaused = true;
     this.worker.postMessage({ type: 'pause' });
   }
 
-  resume(now = performance.now()): void {
+  resume(now = this.now()): void {
     if (!this.currentPaused) return;
     this.renderAnchorMs = this.frozenRenderTimeMs ?? this.latest()?.snapshot.gameTimeMs ?? 0;
     this.renderAnchorAt = now;
@@ -51,7 +51,7 @@ export class SimClient {
     this.worker.postMessage({ type: 'resume' });
   }
 
-  setSpeed(speed: SimSpeed, now = performance.now()): void {
+  setSpeed(speed: SimSpeed, now = this.now()): void {
     if (speed === this.currentSpeed) return;
     this.renderAnchorMs = this.renderTimeAt(now);
     this.renderAnchorAt = now;
@@ -69,7 +69,7 @@ export class SimClient {
     };
   }
 
-  getInterpolatedEntities(now = performance.now()): EntityState[] {
+  getInterpolatedEntities(now = this.now()): EntityState[] {
     const latest = this.latest()?.snapshot;
     if (!latest) return [];
     const previous = this.snapshots.length > 1 ? this.snapshots[0]!.snapshot : latest;
@@ -95,7 +95,7 @@ export class SimClient {
   private readonly handleMessage = (event: MessageEvent<unknown>): void => {
     if (!isWorkerToMainMessage(event.data)) return;
     const message: WorkerToMainMessage = event.data;
-    const receivedAt = performance.now();
+    const receivedAt = this.now();
     const priorLatest = this.latest();
     this.snapshots = [...this.snapshots, { snapshot: message.snapshot, receivedAt }].slice(-2);
     if (priorLatest) {
