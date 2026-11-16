@@ -61,6 +61,19 @@ export function addLine(
   };
 }
 
+/** A station is a transfer point when both supported modes serve it. */
+export function isTransferStation(network: Network, stationId: string): boolean {
+  let hasBrt = false;
+  let hasMetro = false;
+  for (const line of network.lines) {
+    if (!line.stationIds.includes(stationId)) continue;
+    if (line.mode === 'brt') hasBrt = true;
+    if (line.mode === 'metro') hasMetro = true;
+    if (hasBrt && hasMetro) return true;
+  }
+  return false;
+}
+
 /** Great-circle distance in km, used for lines, access walks and village demand. */
 export function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
   const toRadians = Math.PI / 180;
