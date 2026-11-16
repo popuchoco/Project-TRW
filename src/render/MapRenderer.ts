@@ -305,6 +305,9 @@ export class MapRenderer {
 
   private rebuildSelection(): void {
     this.selectionRoot.removeChildren().forEach((child) => child.destroy());
+    // Insets must be (re)built even with no selection, otherwise they only
+    // appear after the first click or window resize.
+    this.rebuildInsets();
     if (!this.selectedCode) return;
     const feature = this.featureByCode(this.selectedCode);
     if (!feature) return;
@@ -315,7 +318,6 @@ export class MapRenderer {
       }
     }
     this.selectionRoot.addChild(graphics);
-    this.rebuildInsets();
   }
 
   private featureByCode(code: string): TownFeature | undefined {
@@ -342,8 +344,15 @@ export class MapRenderer {
     const margin = 12;
     const cellWidth = Math.min(210, Math.max(128, width * 0.31));
     const cellHeight = Math.min(126, Math.max(88, height * 0.19));
+    // Keep the top-right inset clear of the DOM toolbar, which wraps on narrow screens.
+    const diaoyutaiX = width - cellWidth - margin;
+    const toolbarRect = document.querySelector('.map-toolbar')?.getBoundingClientRect();
+    const canvasTop = this.app.canvas.getBoundingClientRect().top;
+    const diaoyutaiY = toolbarRect && toolbarRect.right > diaoyutaiX
+      ? Math.max(margin, toolbarRect.bottom - canvasTop + 8)
+      : margin;
     const boxes: Array<{ id: InsetId; x: number; y: number; width: number; height: number }> = [
-      { id: 'diaoyutai', x: width - cellWidth - margin, y: margin, width: cellWidth, height: cellHeight },
+      { id: 'diaoyutai', x: diaoyutaiX, y: diaoyutaiY, width: cellWidth, height: cellHeight },
       { id: 'dongsha', x: margin, y: height - cellHeight * 2 - margin * 2, width: cellWidth, height: cellHeight },
       { id: 'nansha', x: margin, y: height - cellHeight - margin, width: cellWidth, height: cellHeight },
     ];
