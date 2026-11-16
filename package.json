@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "lint": "eslint .",
     "data:download": "node scripts/data/download.mjs",
-    "data:build": "npm run data:download && node scripts/data/build.mjs"
+    "data:build": "npm run data:download && node scripts/data/build.mjs && node scripts/data/build-villages.mjs"
   },
   "dependencies": {
     "pixi.js": "^8.23.0"
