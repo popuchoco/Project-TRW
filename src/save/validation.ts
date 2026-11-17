@@ -1,5 +1,6 @@
 import { TRANSIT_MODES } from "../city/modes";
 import { CURRENT_SCHEMA_VERSION, FutureSaveVersionError, SaveValidationError, type SavePayloadV2, type SaveRecord } from "./types";
+import { isTransitWorkerSaveState } from "../sim/protocol";
 
 const MAX_STATIONS = 10_000;
 const MAX_LINES = 1_000;
@@ -143,6 +144,10 @@ function validateV2Payload(value: Record<string, unknown>): asserts value is Sav
     if (key.length > 80 || !isFiniteNumber(stats[key])) {
       throw new SaveValidationError(`存檔格式錯誤：stats.${key} 必須是有限數值。`);
     }
+  }
+
+  if (value.transit !== undefined && !isTransitWorkerSaveState(value.transit)) {
+    throw new SaveValidationError("存檔格式錯誤：payload.transit 不是有效的模擬延續狀態。");
   }
 }
 

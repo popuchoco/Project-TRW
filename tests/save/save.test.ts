@@ -6,6 +6,7 @@ import { IndexedDbSaveStorage } from "../../src/save/storage";
 import { createEmptyNetwork } from "../../src/city/network";
 import { CURRENT_SCHEMA_VERSION, FutureSaveVersionError, MAX_SAVE_BYTES, SaveMigrationError, type SavePayloadV2, type SaveRecord, type SaveStorage } from "../../src/save/types";
 import { validateSaveRecord } from "../../src/save/validation";
+import { TransitSim } from "../../src/sim/transit/TransitSim";
 
 class MemorySaveStorage implements SaveStorage {
   value: unknown | undefined;
@@ -109,6 +110,28 @@ describe("save records", () => {
     expect(saved.payload).toEqual(current);
     expect(storage.value).toEqual(saved);
     expect(exported).toEqual(saved);
+  });
+
+  it("includes resumable transit worker state in v2 autosave and export payloads", async () => {
+    const storage = new MemorySaveStorage();
+    const payload = validPayload();
+    const providers: SaveStateProviders = {
+      getNetwork: () => payload.network,
+      getCamera: () => payload.camera,
+      getView: () => "metro",
+      getSimulation: () => payload.simulation,
+      getStats: () => payload.stats,
+    };
+    const transit = {
+      version: 2 as const,
+      seed: 123,
+      transit: new TransitSim([], payload.network).serialize(),
+    };
+
+    const saved = await saveCurrentState(storage, providers, 5679, transit);
+    const exported = importSaveJson(serializeSave(saved));
+    expect(saved.payload).toMatchObject({ view: "metro", transit });
+    expect(exported.payload.transit).toEqual(transit);
   });
 
   it("rejects a future version with a typed error", () => {

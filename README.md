@@ -33,7 +33,9 @@ npm run build && npm run preview
 
 ## Simulation worker
 
-`src/sim/` 的模擬邏輯是純 TypeScript，可在 Node 測試。`sim.worker.ts` 以固定步長時鐘支援暫停與 1×／2×／4×；TransitSim 的每個模擬 tick 推進一個遊戲分鐘，因此遊戲日為 24 小時、共 1,440 ticks。依名目 10 ticks／秒計算，1× 一個遊戲日約 2 分 24 秒，2× 約 1 分 12 秒，4× 約 36 秒。TransitSim 由可測試的 worker runtime 持有；網路變更與存檔讀寫都在 worker 處理，主執行緒可在快照間內插列車位置。既有 P0 畫面目前仍使用沿假路線移動的 dummy 標記。同 seed＋同 tick 與指令序列會得到相同模擬統計；分頁隱藏時會暫停模擬與繪製。
+`src/sim/` 的模擬邏輯是純 TypeScript，可在 Node 測試。Transit worker 支援暫停與 1×／2×／4×；每個模擬 tick 推進一個遊戲分鐘，因此一個遊戲日為 24 小時、共 1,440 ticks。依名目 10 ticks／秒計算，1× 一個遊戲日約 2 分 24 秒，2× 約 1 分 12 秒，4× 約 36 秒。TransitSim 由可測試的 worker runtime 持有；網路變更與存檔讀寫都在 worker 處理，主執行緒可在快照間內插列車位置。同 seed＋同 tick 與指令序列會得到相同模擬統計；分頁隱藏時會暫停模擬與繪製。
+
+開發與自動化測試可使用 `window.__trw`：`ready` 等待地圖啟動，`getState()` 回傳路網、相機、視圖、模擬狀態與最新統計；`buildTestLine([[經度, 緯度], ...], 'metro' | 'brt')` 建立測試路線，`setTrainCounts(lineId, peak, offPeak)` 設定尖峰與離峰列車數。此介面只讀取狀態，另提供這兩個腳本操作。
 
 ## Administrative map data
 
@@ -61,7 +63,7 @@ Generate the two PNG install icons with the Node built-in-only script:
 node scripts/generate-icons.mjs
 ```
 
-Save records use one IndexedDB database/store and schema version 1. The current P0 payload is a camera and simulation placeholder. Saves can be exported/imported as JSON (maximum 1 MiB); save migration steps are registered in `src/save/migrations.ts`.
+Save records use one IndexedDB database/store and schema version 2. The payload stores the network, camera, island/metro view, simulation controls and summary, plus the transit worker continuation state used to resume daily demand history. Saves can be exported/imported as JSON (maximum 4 MiB); v1 saves migrate to an empty v2 network, and migration steps are registered in `src/save/migrations.ts`.
 
 ## 授權
 

@@ -151,6 +151,251 @@ body {
   display: none;
 }
 
+.simulation-panels {
+  position: absolute;
+  z-index: 2;
+  top: 136px;
+  right: 14px;
+  bottom: 14px;
+  display: flex;
+  width: min(350px, calc(100vw - 28px));
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding: 1px 4px 1px 1px;
+  scrollbar-width: thin;
+}
+
+.operation-panel {
+  flex: 0 0 auto;
+  padding: 10px 11px;
+  border: 1px solid rgb(103 119 128 / 20%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 94%);
+  box-shadow: 0 2px 12px rgb(31 47 56 / 9%);
+  backdrop-filter: blur(8px);
+}
+
+.operation-panel-header,
+.line-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.operation-panel-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.simulation-value-label {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #eef3f1;
+  color: #586760;
+  font-size: 10px;
+}
+
+.operation-panel-content {
+  margin-top: 7px;
+}
+
+.panel-values,
+.line-card-facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.panel-value-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #637078;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.panel-value-row dd {
+  margin: 0;
+  color: #2f3c43;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.panel-placeholder {
+  margin: 0;
+  color: #69767d;
+  font-size: 11px;
+}
+
+.station-details[hidden],
+.simulation-panels[hidden],
+.operation-panel[hidden] {
+  display: none;
+}
+
+.station-panel-name {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.sparkline-title {
+  margin: 8px 0 4px;
+  color: #637078;
+  font-size: 10px;
+}
+
+.station-sparkline {
+  display: flex;
+  height: 36px;
+  align-items: end;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.station-sparkline-bar {
+  flex: 1;
+  min-height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: #5b9a8d;
+}
+
+.station-rename-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.station-rename-input {
+  min-width: 0;
+  flex: 1;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: 1px solid #d4dadd;
+  border-radius: 6px;
+  color: #344149;
+  font: inherit;
+  font-size: 12px;
+}
+
+.line-cards {
+  display: grid;
+  gap: 8px;
+}
+
+.line-card {
+  padding: 8px;
+  border: 1px solid #e1e6e7;
+  border-radius: 7px;
+  background: rgb(250 252 251 / 95%);
+}
+
+.line-card-title {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.line-card-mode {
+  flex: 0 0 auto;
+  color: #647279;
+  font-size: 10px;
+}
+
+.line-card-facts {
+  margin-top: 6px;
+}
+
+.line-card-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 9px;
+  margin-top: 7px;
+}
+
+.panel-control {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 1px 5px;
+  color: #637078;
+  font-size: 10px;
+}
+
+.panel-range {
+  width: 100%;
+  min-width: 0;
+  grid-column: 1 / -1;
+  accent-color: #397d79;
+}
+
+.panel-control-value {
+  color: #344149;
+  font-size: 10px;
+}
+
+.cars-control > span {
+  color: #637078;
+  font-size: 10px;
+}
+
+.cars-control > strong {
+  color: #344149;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.line-periods {
+  display: grid;
+  gap: 4px;
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid #e5e9e9;
+}
+
+.line-period-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 1fr;
+  gap: 2px 5px;
+  color: #59666d;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.line-period-name {
+  grid-row: span 2;
+  color: #344149;
+  font-size: 10px;
+}
+
+.line-period-cost {
+  grid-column: 2 / -1;
+  text-align: right;
+}
+
+.line-total-cost {
+  margin: 6px 0 0;
+  color: #536168;
+  font-size: 10px;
+  text-align: right;
+}
+
+@media (max-width: 680px) {
+  .simulation-panels {
+    top: auto;
+    right: 8px;
+    bottom: 86px;
+    max-height: 42vh;
+    width: min(340px, calc(100vw - 16px));
+  }
+}
+
 .source-dialog {
   width: min(440px, calc(100vw - 32px));
   padding: 18px;

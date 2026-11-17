@@ -1,5 +1,6 @@
 import type { Network } from "../city/network";
 import type { SimSpeed } from "../sim/clock";
+import type { TransitWorkerSaveState } from "../sim/protocol";
 
 export const CURRENT_SCHEMA_VERSION = 2;
 export const MAX_SAVE_BYTES = 4 * 1024 * 1024;
@@ -32,6 +33,8 @@ export interface SavePayloadV2 extends Record<string, unknown> {
   simulation: SaveSimulationState;
   /** Small numeric summary fields supplied by the active simulation. */
   stats: Record<string, number>;
+  /** Resumable transit model state, including habit history and daily summaries. */
+  transit?: TransitWorkerSaveState;
 }
 
 export interface SaveRecord {

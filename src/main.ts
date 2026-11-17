@@ -23,6 +23,9 @@ import {
   insertStation,
   moveStation,
   placeStation,
+  renameStation,
+  setLineCars,
+  setLineTrains,
   type NetworkCommand,
   type VillageAt,
 } from './city/commands';
@@ -30,7 +33,9 @@ import { History } from './city/history';
 import { createEmptyNetwork, lineSpacingWarnings, type Network } from './city/network';
 import { TRANSIT_MODES, type TransitModeId } from './city/modes';
 import type { SimSpeed } from './sim/clock';
+import type { TransitWorkerSnapshot } from './sim/protocol';
 import type { TownFeature } from './map/hit';
+import { createSimulationPanels, type SimulationPanels } from './ui/panels';
 import './style.css';
 
 type FpsSetting = 'auto' | 30 | 60;
@@ -53,9 +58,23 @@ interface TrwDebug {
   getSim(): { seq: number; gameTimeMs: number; paused: boolean; speed: SimSpeed };
 }
 
+interface TrwAutomationDebug {
+  ready: Promise<void>;
+  getState(): {
+    network: Network;
+    camera: { x: number; y: number; zoom: number };
+    view: 'island' | 'metro';
+    simulation: { seq: number; gameTimeMs: number; paused: boolean; speed: SimSpeed };
+    summary?: TransitWorkerSnapshot;
+  };
+  buildTestLine(points: readonly (readonly [number, number])[], mode?: TransitModeId): string;
+  setTrainCounts(lineId: string, peakTrains: number, offPeakTrains: number): void;
+}
+
 declare global {
   interface Window {
     __TRW__?: TrwDebug;
+    __trw?: TrwAutomationDebug;
   }
 }
 
@@ -356,6 +375,15 @@ async function startApp(): Promise<void> {
   let selectedNetworkItem: NetworkSelection;
   let activeEditorTool: EditorTool = 'select';
   let newLineMode: TransitModeId = 'brt';
+  let latestTransitSnapshot: TransitWorkerSnapshot | undefined;
+  const panelControllerRef: { current?: SimulationPanels } = {};
+  const updatePanels = (): void => {
+    panelControllerRef.current?.update(
+      networkHistory.network,
+      latestTransitSnapshot,
+      selectedNetworkItem?.type === 'station' ? selectedNetworkItem.id : undefined,
+    );
+  };
   const saveStateProviders: SaveStateProviders = {
     getNetwork: () => networkHistory.network,
     getCamera: () => {
@@ -374,7 +402,28 @@ async function startApp(): Promise<void> {
       seq: freshSimulation.seq,
       routeProgress: freshSimulation.routeProgress,
     },
-    getStats: () => restoredPayload?.stats ?? {},
+    getStats: () => {
+      const city = latestTransitSnapshot?.city;
+      if (!city || !latestTransitSnapshot) return restoredPayload?.stats ?? {};
+      return {
+        gameDay: latestTransitSnapshot.gameDay,
+        dailyRidership: city.dailyRidership,
+        transitShare: city.transitShare,
+        profitLossRatio: city.profitLossRatio,
+        deniedBoardings: city.deniedBoardings,
+        transfers: city.transfers,
+        fareRevenue: city.fareRevenue,
+        operatingCost: city.operatingCost,
+        pathRecomputeCount: latestTransitSnapshot.pathRecomputeCount,
+        demandPairCount: latestTransitSnapshot.demandPairCount,
+      };
+    },
+  };
+  const saveLiveState = async () => {
+    const transitState = transitClient
+      ? await transitClient.requestSaveState()
+      : restoredPayload?.transit;
+    return saveCurrentState(saveStorage, saveStateProviders, Date.now(), transitState);
   };
   const showStatus = (message: string): void => {
     ui.status.textContent = message;
@@ -418,6 +467,7 @@ async function startApp(): Promise<void> {
     transitClient?.setNetwork(network);
     updateSpacingHint(network);
     updateEditorControls();
+    updatePanels();
   };
   const executeNetworkCommand = (command: NetworkCommand, selection?: NetworkSelection): Network => {
     const network = networkHistory.execute(command);
@@ -429,7 +479,33 @@ async function startApp(): Promise<void> {
     selectedNetworkItem = selection;
     rendererState.current?.setNetworkSelection(selection);
     updateEditorControls();
+    updatePanels();
   };
+  panelControllerRef.current = createSimulationPanels(mount, {
+    renameStation: (stationId, name) => {
+      try {
+        executeNetworkCommand(renameStation(stationId, name), { type: 'station', id: stationId });
+      } catch (error) {
+        showStatus(error instanceof Error ? error.message : '無法更改車站名稱。');
+      }
+    },
+    setLineTrains: (lineId, peakTrains, offPeakTrains) => {
+      try {
+        executeNetworkCommand(setLineTrains(lineId, peakTrains, offPeakTrains), { type: 'line', id: lineId });
+      } catch (error) {
+        showStatus(error instanceof Error ? error.message : '無法調整列車數。');
+      }
+    },
+    setLineCars: (lineId, cars) => {
+      try {
+        executeNetworkCommand(setLineCars(lineId, cars), { type: 'line', id: lineId });
+      } catch (error) {
+        showStatus(error instanceof Error ? error.message : '無法調整列車節數。');
+      }
+    },
+  });
+  panelControllerRef.current.element.hidden = !rendererState.current?.isMetroView;
+  updatePanels();
   for (const [tool, button] of ui.editorToolButtons) {
     button.addEventListener('click', () => {
       activeEditorTool = tool;
@@ -465,7 +541,7 @@ async function startApp(): Promise<void> {
   const importButton = mount.querySelector<HTMLButtonElement>('[data-action="import-save"]');
   exportButton?.addEventListener('click', () => {
     void (async () => {
-      const record = await saveCurrentState(saveStorage, saveStateProviders);
+      const record = await saveLiveState();
       triggerSaveDownload(record);
       showStatus('存檔已匯出。');
     })().catch((error: unknown) => {
@@ -554,7 +630,7 @@ async function startApp(): Promise<void> {
       updateSimulationUi();
     }
     if (document.hidden) {
-      void saveCurrentState(saveStorage, saveStateProviders).catch((error: unknown) => {
+      void saveLiveState().catch((error: unknown) => {
         console.info('Autosave could not be written.', error);
       });
     }
@@ -682,6 +758,7 @@ async function startApp(): Promise<void> {
       ui.infoCard.hidden = true;
       ui.densityLegend.hidden = !active || !hasVillageGeometry;
       ui.editorToolbar.hidden = !active || !hasVillageGeometry;
+      if (panelControllerRef.current) panelControllerRef.current.element.hidden = !active;
       if (active) ensureVillageGeometry();
       else if (ui.status.textContent === '載入北北村里資料中…') ui.status.hidden = true;
     },
@@ -853,9 +930,8 @@ async function startApp(): Promise<void> {
   createdRenderer.setNetwork(networkHistory.network);
   updateSpacingHint(networkHistory.network);
   updateEditorControls();
-  if (restoredPayload) {
-    createdRenderer.setCameraView(restoredPayload.camera.x, restoredPayload.camera.y, restoredPayload.camera.zoom);
-  }
+  if (restoredPayload?.view === 'metro') createdRenderer.enterMetroView();
+  if (restoredPayload) createdRenderer.setCameraView(restoredPayload.camera.x, restoredPayload.camera.y, restoredPayload.camera.zoom);
 
   currentLodForStats = createdRenderer.currentLod;
   visibleCountyCount = createdRenderer.countiesInView.length;
@@ -873,19 +949,64 @@ async function startApp(): Promise<void> {
   });
   transitClient = new SimClient(undefined, () => performance.now());
   transitClient.subscribe((snapshot) => {
-    if ('trains' in snapshot) createdRenderer.setTrainPositions(snapshot.trains);
+    if ('trains' in snapshot) {
+      latestTransitSnapshot = snapshot;
+      createdRenderer.setTrainPositions(snapshot.trains);
+      updatePanels();
+    }
   });
   const dataBase = new URL(import.meta.env.BASE_URL, document.baseURI);
   transitClient.startTransit(
     restoredSimulation?.seed ?? 0x545257,
     { kind: 'url', url: new URL('data/villages-6300065000.json', dataBase).href },
     networkHistory.network,
-    undefined,
+    restoredPayload?.transit,
     {
       speed: restoredSimulation?.speed ?? selectedSimSpeed,
       paused: restoredSimulation?.paused ?? false,
     },
   );
+  window.__trw = {
+    ready,
+    getState: () => ({
+      network: {
+        stations: networkHistory.network.stations.map((station) => ({ ...station })),
+        lines: networkHistory.network.lines.map((line) => ({ ...line, stationIds: [...line.stationIds] })),
+        nextId: networkHistory.network.nextId,
+      },
+      camera: {
+        x: createdRenderer.camera.center.x,
+        y: createdRenderer.camera.center.y,
+        zoom: createdRenderer.camera.zoom,
+      },
+      view: createdRenderer.isMetroView ? 'metro' : 'island',
+      simulation: transitClient?.getStatus() ?? { seq: 0, gameTimeMs: 0, paused: true, speed: selectedSimSpeed },
+      ...(latestTransitSnapshot ? { summary: structuredClone(latestTransitSnapshot) } : {}),
+    }),
+    buildTestLine: (points, mode = 'metro') => {
+      if (points.length < 2) throw new RangeError('A test line needs at least two lon/lat points.');
+      if (mode !== 'brt' && mode !== 'metro') throw new RangeError('Unknown test line mode.');
+      const current = networkHistory.network;
+      const stationIds = points.map((point, index) => {
+        if (point.length !== 2 || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
+          throw new RangeError(`Invalid lon/lat test point at index ${index}.`);
+        }
+        return `s${current.nextId + index}`;
+      });
+      const lineId = `l${current.nextId + points.length}`;
+      const commands: NetworkCommand[] = [
+        ...points.map((point) => stationCommandAt(point)),
+        createLine(stationIds[0]!, stationIds[stationIds.length - 1]!, mode),
+        ...stationIds.slice(1, -1).map((_stationId, index) =>
+          insertStation(lineId, index, { stationId: stationIds[index + 1]! })),
+      ];
+      executeNetworkCommand(combineCommands(commands, 'debugBuildTestLine'), { type: 'line', id: lineId });
+      return lineId;
+    },
+    setTrainCounts: (lineId, peakTrains, offPeakTrains) => {
+      executeNetworkCommand(setLineTrains(lineId, peakTrains, offPeakTrains), { type: 'line', id: lineId });
+    },
+  };
   ui.simSpeedSelect.value = String(selectedSimSpeed);
   if (document.hidden) {
     automaticPauseOnHide = true;

@@ -66,6 +66,26 @@ describe('city network helpers', () => {
     expect(lineHourlyCapacity(line, stations, 'morningPeak')).toBeCloseTo((3_600 / headway) * 120, 8);
   });
 
+  it('uses train counts and metro cars for peak and off-peak headway and capacity', () => {
+    const stations = [
+      { id: 's1', name: 'A', lon: 121, lat: 25 },
+      { id: 's2', name: 'B', lon: 121.01, lat: 25 },
+    ];
+    const line = {
+      id: 'l1', mode: 'metro' as const, stationIds: ['s1', 's2'],
+      peakTrains: 4, offPeakTrains: 2, cars: 6, color: '#f00', name: 'Test',
+    };
+    const roundTrip = lineRoundTripTimeSeconds(line, stations);
+    const peakHeadway = lineHeadwaySeconds(line, stations, 'morningPeak');
+    const offPeakHeadway = lineHeadwaySeconds(line, stations, 'offPeak');
+    expect(peakHeadway).toBeCloseTo(roundTrip / 4, 8);
+    expect(offPeakHeadway).toBeCloseTo(roundTrip / 2, 8);
+    expect(lineHourlyCapacity(line, stations, 'morningPeak'))
+      .toBeCloseTo((3_600 / peakHeadway) * 6 * TRANSIT_MODES.metro.capacityPerCar, 8);
+    expect(lineHourlyCapacity({ ...line, cars: 3 }, stations, 'morningPeak'))
+      .toBeCloseTo((3_600 / peakHeadway) * 3 * TRANSIT_MODES.metro.capacityPerCar, 8);
+  });
+
   it('reports out-of-range spacing without rejecting a line', () => {
     const stations = [
       { id: 's1', name: 'A', lon: 121, lat: 25 },
