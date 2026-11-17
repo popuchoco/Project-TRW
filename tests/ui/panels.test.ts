@@ -19,5 +19,8 @@ describe('operation panel value formatting', () => {
     expect(formatPanelHeadway(720)).toBe('12 分');
     expect(formatPanelHeadway(null)).toBe('無班次');
     expect(formatPanelPercent(-0.125)).toBe('-12%');
+    expect(formatPanelPercent(0)).toBe('0%');
+    expect(formatPanelPercent(0.0014)).toBe('0.1%');
+    expect(formatPanelPercent(-0.034)).toBe('-3.4%');
   });
 });

@@ -39,7 +39,10 @@ export function formatPanelHeadway(seconds: number | null): string {
 }
 
 export function formatPanelPercent(value: number): string {
-  return `${Math.round(value * 100)}%`;
+  const percent = value * 100;
+  // Small non-zero shares (e.g. early transit share) would otherwise read as 0%.
+  if (percent !== 0 && Math.abs(percent) < 10) return `${percent.toFixed(1)}%`;
+  return `${Math.round(percent)}%`;
 }
 
 export function formatPanelMoney(value: number): string {
