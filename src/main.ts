@@ -1,6 +1,6 @@
 import { Application } from 'pixi.js';
 import { MapDataLoader } from './map/loader';
-import type { LodId } from './map/lod';
+import { scheduleOnceOnIdleOrTrigger, type LodId } from './map/lod';
 import { MapRenderer } from './render/MapRenderer';
 import { importSaveFile, triggerSaveDownload } from './save/import-export';
 import { IndexedDbSaveStorage } from './save/storage';
@@ -331,6 +331,8 @@ async function startApp(): Promise<void> {
   const pendingLods = new Map<Exclude<LodId, 'lod3'>, Promise<void>>();
   const pendingCounties = new Map<string, Promise<void>>();
   const loadedCountyLods = new Set<string>();
+  let triggerLod1Preload = (): void => {};
+  let previousZoom: number | undefined;
   const ensureLod = (lod: Exclude<LodId, 'lod3'>): Promise<void> => {
     if (loadedLods.has(lod)) return Promise.resolve();
     const existing = pendingLods.get(lod);
@@ -391,7 +393,9 @@ async function startApp(): Promise<void> {
       ui.infoText.textContent = `${feature.properties.COUNTYNAME} ${feature.properties.TOWNNAME}（${feature.properties.TOWNCODE}）`;
       ui.infoCard.hidden = false;
     },
-    (lod, counties) => {
+    (lod, counties, zoom) => {
+      if (previousZoom !== undefined && zoom !== previousZoom) triggerLod1Preload();
+      previousZoom = zoom;
       currentLodForStats = lod;
       visibleCountyCount = counties.length;
       syncMapData(lod, counties);
@@ -429,8 +433,8 @@ async function startApp(): Promise<void> {
   pixiApp.ticker.start();
   ui.status.hidden = true;
 
-  // Keep a finer hit-test topology warm without changing the initial overview LOD.
-  void ensureLod('lod1');
+  // Keep a finer hit-test topology warm after startup, or as soon as the user zooms.
+  triggerLod1Preload = scheduleOnceOnIdleOrTrigger(() => { void ensureLod('lod1'); });
 }
 
 void startApp().catch((error: unknown) => {
