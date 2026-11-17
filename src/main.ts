@@ -187,7 +187,7 @@ function createUi(mount: HTMLElement): {
   sourceDialog.setAttribute('aria-labelledby', 'source-dialog-title');
   const sourceHeading = makeElement('h2', '', '資料來源');
   sourceHeading.id = 'source-dialog-title';
-  const sourceDetails = makeElement('p', '', '提供機關：內政部國土測繪中心\n資料名稱：鄉鎮市區界線(TWD97經緯度)，版本 1140318\n來源：https://data.gov.tw/dataset/7441\n\n提供機關：國土測繪中心\n資料名稱：村里界圖(TWD97經緯度)，版本 1150817\n來源：https://data.gov.tw/dataset/7438\n\n提供機關：內政部戶政司\n資料名稱：村里戶數、單一年齡人口（新增區域代碼），版本 11510\n來源：https://data.gov.tw/dataset/77132\n\n授權：政府資料開放授權條款第1版 https://data.gov.tw/license\n本專案已對原始資料進行簡化、拆分與格式轉換。');
+  const sourceDetails = makeElement('p', '', '提供機關：內政部國土測繪中心\n資料名稱：鄉鎮市區界線(TWD97經緯度)，版本 1140318\n來源：https://data.gov.tw/dataset/7441\n\n提供機關：內政部國土測繪中心\n資料名稱：村里界圖(TWD97經緯度)，版本 1150817\n來源：https://data.gov.tw/dataset/7438\n\n提供機關：內政部戶政司\n資料名稱：村里戶數、單一年齡人口（新增區域代碼），版本 11510\n來源：https://data.gov.tw/dataset/77132\n\n授權：政府資料開放授權條款第1版 https://data.gov.tw/license\n本專案已對原始資料進行簡化、拆分與格式轉換。');
   const closeSources = makeElement('button', 'source-button', '關閉');
   closeSources.type = 'button';
   sources.addEventListener('click', () => sourceDialog.showModal());
