@@ -1,13 +1,22 @@
 import { FIXED_TICK_MS, type SimSpeed } from './clock';
+import type { Network } from '../city/network';
 import { createSim, resumeSim, type EntityState, type SimContinuationState, type SimSnapshot, type SimState } from './core';
-import { interpolateSnapshots } from './interpolate';
-import type { WorkerToMainMessage } from './protocol';
-import { isWorkerToMainMessage } from './protocol';
+import { interpolateSnapshots, interpolateTrainSnapshots } from './interpolate';
+import { GAME_MS_PER_SIM_TICK } from './time';
+import type {
+  TransitWorkerSaveState,
+  TransitWorkerSnapshot,
+  VillageSource,
+  WorkerToMainMessage,
+} from './protocol';
+import { isTransitWorkerToMainMessage, isWorkerToMainMessage } from './protocol';
 
 interface TimedSnapshot {
   snapshot: SimSnapshot;
   receivedAt: number;
 }
+
+export type SimClientSnapshot = SimSnapshot | TransitWorkerSnapshot;
 
 export interface SimStatus {
   seq: number;
@@ -29,8 +38,16 @@ export interface SimStartOptions {
 export class SimClient {
   private readonly worker: Worker;
   private snapshots: TimedSnapshot[] = [];
+  private transitSnapshots: Array<{ snapshot: TransitWorkerSnapshot; receivedAt: number }> = [];
+  private readonly snapshotSubscribers = new Set<(snapshot: SimClientSnapshot) => void>();
+  private readonly pendingRequests = new Map<string, {
+    resolve: (state?: TransitWorkerSaveState) => void;
+    reject: (error: Error) => void;
+  }>();
   private currentPaused = true;
   private currentSpeed: SimSpeed = 1;
+  private protocol: 'legacy' | 'transit' = 'legacy';
+  private requestSequence = 0;
   private renderAnchorMs = 0;
   private renderAnchorAt = 0;
   private frozenRenderTimeMs?: number;
@@ -41,7 +58,15 @@ export class SimClient {
     this.worker.addEventListener('message', this.handleMessage);
   }
 
+  subscribe(listener: (snapshot: SimClientSnapshot) => void): () => void {
+    this.snapshotSubscribers.add(listener);
+    return () => { this.snapshotSubscribers.delete(listener); };
+  }
+
   start(seed: number, continuation?: SimContinuationState, options: SimStartOptions = {}): void {
+    this.protocol = 'legacy';
+    this.snapshots = [];
+    this.transitSnapshots = [];
     this.initialState = continuation ? resumeSim(continuation) : createSim(seed);
     this.currentPaused = options.paused ?? false;
     this.currentSpeed = options.speed ?? 1;
@@ -52,6 +77,50 @@ export class SimClient {
       state: { seed: this.initialState.seed, rngState, seq, gameTimeMs, routeProgress },
       paused: this.currentPaused,
       speed: this.currentSpeed,
+    });
+  }
+
+  startTransit(
+    seed: number,
+    villages: VillageSource,
+    network: Network,
+    continuation?: TransitWorkerSaveState,
+    options: SimStartOptions = {},
+  ): void {
+    this.protocol = 'transit';
+    this.snapshots = [];
+    this.transitSnapshots = [];
+    this.initialState = undefined;
+    this.currentPaused = options.paused ?? false;
+    this.currentSpeed = options.speed ?? 1;
+    this.worker.postMessage({
+      type: 'start', seed, villages, network, state: continuation,
+      paused: this.currentPaused, speed: this.currentSpeed,
+    });
+  }
+
+  setNetwork(network: Network): void {
+    if (this.protocol === 'transit') this.worker.postMessage({ type: 'setNetwork', network });
+  }
+
+  requestSaveState(): Promise<TransitWorkerSaveState> {
+    if (this.protocol !== 'transit') return Promise.reject(new Error('Transit simulation has not started.'));
+    const requestId = this.nextRequestId('save');
+    return new Promise<TransitWorkerSaveState>((resolve, reject) => {
+      this.pendingRequests.set(requestId, {
+        resolve: (state) => state ? resolve(state) : reject(new Error('Worker returned no save state.')),
+        reject,
+      });
+      this.worker.postMessage({ type: 'saveState', requestId });
+    });
+  }
+
+  loadState(state: TransitWorkerSaveState): Promise<void> {
+    if (this.protocol !== 'transit') return Promise.reject(new Error('Transit simulation has not started.'));
+    const requestId = this.nextRequestId('load');
+    return new Promise<void>((resolve, reject) => {
+      this.pendingRequests.set(requestId, { resolve: () => resolve(), reject });
+      this.worker.postMessage({ type: 'loadState', requestId, state });
     });
   }
 
@@ -80,7 +149,7 @@ export class SimClient {
   }
 
   getStatus(): SimStatus {
-    const latest = this.latest()?.snapshot;
+    const latest = this.protocol === 'transit' ? this.latestTransit()?.snapshot : this.latest()?.snapshot;
     return {
       seq: latest?.seq ?? 0,
       gameTimeMs: latest?.gameTimeMs ?? 0,
@@ -90,6 +159,7 @@ export class SimClient {
   }
 
   getSaveState(): SimClientSaveState {
+    if (this.protocol === 'transit') throw new Error('Use requestSaveState() for a transit simulation.');
     const snapshot = this.latest()?.snapshot;
     const state = snapshot ?? this.initialState ?? createSim(0);
     return {
@@ -104,15 +174,27 @@ export class SimClient {
   }
 
   getInterpolatedEntities(now = this.now()): EntityState[] {
+    if (this.protocol !== 'legacy') return [];
     const latest = this.latest()?.snapshot;
     if (!latest) return [];
     const previous = this.snapshots.length > 1 ? this.snapshots[0]!.snapshot : latest;
     return interpolateSnapshots(previous, latest, this.renderTimeAt(now));
   }
 
+  getInterpolatedTrainPositions(now = this.now()): TransitWorkerSnapshot['trains'] {
+    if (this.protocol !== 'transit') return [];
+    const latest = this.latestTransit()?.snapshot;
+    if (!latest) return [];
+    const previous = this.transitSnapshots.length > 1 ? this.transitSnapshots[0]!.snapshot : latest;
+    return interpolateTrainSnapshots(previous, latest, this.renderTimeAt(now));
+  }
+
   destroy(): void {
     this.worker.removeEventListener('message', this.handleMessage);
     this.worker.terminate();
+    this.snapshotSubscribers.clear();
+    for (const request of this.pendingRequests.values()) request.reject(new Error('Simulation worker was terminated.'));
+    this.pendingRequests.clear();
   }
 
   private latest(): TimedSnapshot | undefined {
@@ -121,27 +203,71 @@ export class SimClient {
 
   private renderTimeAt(now: number): number {
     if (this.frozenRenderTimeMs !== undefined) return this.frozenRenderTimeMs;
-    if (this.snapshots.length < 2) return this.latest()?.snapshot.gameTimeMs ?? 0;
+    const latestTime = this.protocol === 'transit'
+      ? this.latestTransit()?.snapshot.gameTimeMs
+      : this.latest()?.snapshot.gameTimeMs;
+    const snapshotCount = this.protocol === 'transit' ? this.transitSnapshots.length : this.snapshots.length;
+    if (snapshotCount < 2) return latestTime ?? 0;
     const elapsed = this.currentPaused ? 0 : Math.max(0, now - this.renderAnchorAt) * this.currentSpeed;
     return this.renderAnchorMs + elapsed;
   }
 
   private readonly handleMessage = (event: MessageEvent<unknown>): void => {
-    if (!isWorkerToMainMessage(event.data)) return;
-    const message: WorkerToMainMessage = event.data;
-    const receivedAt = this.now();
-    const priorLatest = this.latest();
-    this.snapshots = [...this.snapshots, { snapshot: message.snapshot, receivedAt }].slice(-2);
-    if (priorLatest) {
-      this.renderAnchorMs = message.snapshot.gameTimeMs - FIXED_TICK_MS;
-      this.renderAnchorAt = receivedAt;
-      if (this.currentPaused && this.frozenRenderTimeMs === undefined) {
-        this.frozenRenderTimeMs = this.renderAnchorMs;
+    if (isWorkerToMainMessage(event.data)) {
+      const message: WorkerToMainMessage = event.data;
+      const receivedAt = this.now();
+      const priorLatest = this.latest();
+      this.snapshots = [...this.snapshots, { snapshot: message.snapshot, receivedAt }].slice(-2);
+      if (priorLatest) {
+        this.renderAnchorMs = message.snapshot.gameTimeMs - FIXED_TICK_MS;
+        this.renderAnchorAt = receivedAt;
+        if (this.currentPaused && this.frozenRenderTimeMs === undefined) this.frozenRenderTimeMs = this.renderAnchorMs;
+      } else {
+        this.renderAnchorMs = message.snapshot.gameTimeMs;
+        this.renderAnchorAt = receivedAt;
       }
-    } else {
-      this.renderAnchorMs = message.snapshot.gameTimeMs;
-      this.renderAnchorAt = receivedAt;
+      this.onSnapshot?.(message.snapshot);
+      this.publishSnapshot(message.snapshot);
+      return;
     }
-    this.onSnapshot?.(message.snapshot);
+    if (!isTransitWorkerToMainMessage(event.data)) return;
+    const message = event.data;
+    if (message.type === 'snapshot') {
+      const receivedAt = this.now();
+      const priorLatest = this.latestTransit();
+      this.transitSnapshots = [...this.transitSnapshots, { snapshot: message.snapshot, receivedAt }].slice(-2);
+      if (priorLatest) {
+        this.renderAnchorMs = message.snapshot.gameTimeMs - GAME_MS_PER_SIM_TICK;
+        this.renderAnchorAt = receivedAt;
+        if (this.currentPaused && this.frozenRenderTimeMs === undefined) this.frozenRenderTimeMs = this.renderAnchorMs;
+      } else {
+        this.renderAnchorMs = message.snapshot.gameTimeMs;
+        this.renderAnchorAt = receivedAt;
+      }
+      this.publishSnapshot(message.snapshot);
+    } else if (message.type === 'saveStateResult' || message.type === 'loadStateResult') {
+      const request = this.pendingRequests.get(message.requestId);
+      if (!request) return;
+      this.pendingRequests.delete(message.requestId);
+      request.resolve(message.type === 'saveStateResult' ? message.state : undefined);
+    } else if (message.type === 'error' && message.requestId) {
+      const request = this.pendingRequests.get(message.requestId);
+      if (!request) return;
+      this.pendingRequests.delete(message.requestId);
+      request.reject(new Error(message.message));
+    }
   };
+
+  private latestTransit(): { snapshot: TransitWorkerSnapshot; receivedAt: number } | undefined {
+    return this.transitSnapshots[this.transitSnapshots.length - 1];
+  }
+
+  private publishSnapshot(snapshot: SimClientSnapshot): void {
+    for (const subscriber of this.snapshotSubscribers) subscriber(snapshot);
+  }
+
+  private nextRequestId(action: 'save' | 'load'): string {
+    this.requestSequence += 1;
+    return `${action}-${this.requestSequence}`;
+  }
 }

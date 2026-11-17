@@ -370,6 +370,13 @@ export class TransitSim {
     return this.snapshot();
   }
 
+  /** Prepares dirty network-derived paths and refreshes the current summary without advancing time. */
+  refresh(): TransitSummarySnapshot {
+    this.ensurePrepared();
+    this.latestSnapshot = this.summarizeDay(Math.floor(this.gameTime / GAME_DAY_MS), false);
+    return this.snapshot();
+  }
+
   snapshot(): TransitSummarySnapshot {
     const snapshot = cloneSnapshot(this.latestSnapshot);
     snapshot.gameTimeMs = this.gameTime;
@@ -591,7 +598,7 @@ export class TransitSim {
     return { periodId, periodCapacityBySegment, attemptedLoadBySegment, operatingCostByLine, hourlyCapacityByLine };
   }
 
-  private summarizeDay(gameDay: number): TransitSummarySnapshot {
+  private summarizeDay(gameDay: number, appendHistory = true): TransitSummarySnapshot {
     const graph = this.graph!;
     const stationAccumulators = new Map<string, StationAccumulator>();
     for (const station of graph.stations) {
@@ -712,7 +719,9 @@ export class TransitSim {
         deniedBoardings: accumulated.denied,
         transfers: accumulated.transfers,
         lineIds,
-        last7DaysEntriesExits: [...(prior?.last7DaysEntriesExits ?? []), entriesExits].slice(-7),
+        last7DaysEntriesExits: appendHistory
+          ? [...(prior?.last7DaysEntriesExits ?? []), entriesExits].slice(-7)
+          : [...(prior?.last7DaysEntriesExits ?? [])],
       };
     });
 

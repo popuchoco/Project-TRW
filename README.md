@@ -33,7 +33,7 @@ npm run build && npm run preview
 
 ## Simulation worker
 
-`src/sim/` 是純 TypeScript（不依賴 DOM 或 PixiJS），可在 Node 測試。`sim.worker.ts` 以固定 10 Hz（每 tick 100 ms 遊戲時間）推進，支援暫停與 1×／2×／4×，並以 `postMessage` 傳送快照（序號、遊戲時間、實體）。主執行緒在兩個快照之間內插，P0 只有一個沿假路線移動的 dummy 標記。同 seed＋同輸入序列會得到同樣的快照序列。分頁隱藏時會暫停模擬與繪製。
+`src/sim/` 的模擬邏輯是純 TypeScript，可在 Node 測試。`sim.worker.ts` 以固定步長時鐘支援暫停與 1×／2×／4×；TransitSim 的每個模擬 tick 推進一個遊戲分鐘，因此遊戲日為 24 小時、共 1,440 ticks。依名目 10 ticks／秒計算，1× 一個遊戲日約 2 分 24 秒，2× 約 1 分 12 秒，4× 約 36 秒。TransitSim 由可測試的 worker runtime 持有；網路變更與存檔讀寫都在 worker 處理，主執行緒可在快照間內插列車位置。既有 P0 畫面目前仍使用沿假路線移動的 dummy 標記。同 seed＋同 tick 與指令序列會得到相同模擬統計；分頁隱藏時會暫停模擬與繪製。
 
 ## Administrative map data
 
