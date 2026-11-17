@@ -248,7 +248,51 @@ function isQualityOrMissingLegacy(value: unknown, allowMissing: boolean): boolea
   return (allowMissing && value === undefined) || value === null || isQualityScore(value, allowMissing);
 }
 
-function isTransitSummary(value: unknown, allowMissingQuality = false): value is TransitSummarySnapshot {
+function isSegmentFlow(value: unknown): boolean {
+  return isRecord(value)
+    && isNonNegativeNumber(value.load)
+    && isNonNegativeNumber(value.capacity)
+    && isNonNegativeNumber(value.loadFactor);
+}
+
+function isDirectionalSectionFlow(value: unknown, segmentCount: number): boolean {
+  return Array.isArray(value) && value.length === segmentCount && value.every(isSegmentFlow);
+}
+
+function isSectionFlow(value: unknown, stationCount: number): boolean {
+  if (!isRecord(value)) return false;
+  const segmentCount = stationCount - 1;
+  return PERIOD_IDS.every((periodId) => {
+    const period = value[periodId];
+    return isRecord(period)
+      && isDirectionalSectionFlow(period.forward, segmentCount)
+      && isDirectionalSectionFlow(period.backward, segmentCount);
+  });
+}
+
+function isDirectionalStationFlow(value: unknown, stationCount: number): boolean {
+  return isRecord(value)
+    && Array.isArray(value.boardings) && value.boardings.length === stationCount
+    && value.boardings.every(isNonNegativeNumber)
+    && Array.isArray(value.alightings) && value.alightings.length === stationCount
+    && value.alightings.every(isNonNegativeNumber);
+}
+
+function isStationFlows(value: unknown, stationCount: number): boolean {
+  if (!isRecord(value)) return false;
+  return PERIOD_IDS.every((periodId) => {
+    const period = value[periodId];
+    return isRecord(period)
+      && isDirectionalStationFlow(period.forward, stationCount)
+      && isDirectionalStationFlow(period.backward, stationCount);
+  });
+}
+
+function isTransitSummary(
+  value: unknown,
+  allowMissingQuality = false,
+  allowMissingSectionFlow = false,
+): value is TransitSummarySnapshot {
   if (!isRecord(value) || !isNonNegativeNumber(value.gameTimeMs)
     || !isNonNegativeInteger(value.gameDay) || !isPeriodId(value.currentPeriodId)
     || !isNonNegativeInteger(value.pathRecomputeCount) || !isNonNegativeInteger(value.demandPairCount)
@@ -277,10 +321,13 @@ function isTransitSummary(value: unknown, allowMissingQuality = false): value is
   for (const line of value.lines) {
     if (!isRecord(line) || typeof line.lineId !== 'string' || line.lineId.length === 0
       || typeof line.name !== 'string' || (line.mode !== 'brt' && line.mode !== 'metro')
-      || !isNonNegativeInteger(line.stationCount) || !isNonNegativeNumber(line.lengthKm)
+      || !isNonNegativeInteger(line.stationCount) || line.stationCount < 2 || !isNonNegativeNumber(line.lengthKm)
       || !isNonNegativeInteger(line.cars) || !isNonNegativeInteger(line.peakTrains)
       || !isNonNegativeInteger(line.offPeakTrains)
       || !isQualityOrMissingLegacy(line.quality, allowMissingQuality)
+      || !((allowMissingSectionFlow && line.sectionFlow === undefined && line.stationFlows === undefined)
+        || (isSectionFlow(line.sectionFlow, line.stationCount)
+          && isStationFlows(line.stationFlows, line.stationCount)))
       || !Array.isArray(line.periods) || line.periods.length !== 4
       || !line.periods.every((period: unknown) => isRecord(period)
         && isPeriodId(period.periodId) && typeof period.periodName === 'string'
@@ -302,7 +349,7 @@ function isSerializedTransitState(value: unknown): value is TransitSimSerialized
   if (!isRecord(value) || value.version !== 1 || typeof value.villageFingerprint !== 'string'
     || !isNetwork(value.network) || !isNonNegativeNumber(value.gameTimeMs)
     || !isNonNegativeInteger(value.pathRecomputeCount) || !Array.isArray(value.actualAttempts)
-    || !isTransitSummary(value.snapshot, true)) return false;
+    || !isTransitSummary(value.snapshot, true, true)) return false;
   const attemptKeys = new Set<string>();
   for (const attempt of value.actualAttempts) {
     if (!isRecord(attempt) || typeof attempt.key !== 'string' || attemptKeys.has(attempt.key)

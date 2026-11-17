@@ -49,6 +49,30 @@ const periodStats = [
   { periodId: 'night', periodName: '夜間', maxLoadFactor: 0, operatingCost: 0, roundTripTimeSeconds: 0, headwaySeconds: null, hourlyCapacity: 0, periodCapacity: 0 },
 ] as const;
 
+const zeroSectionFlow = {
+  forward: [{ load: 0, capacity: 0, loadFactor: 0 }],
+  backward: [{ load: 0, capacity: 0, loadFactor: 0 }],
+};
+
+const zeroStationFlow = {
+  forward: { boardings: [0, 0], alightings: [0, 0] },
+  backward: { boardings: [0, 0], alightings: [0, 0] },
+};
+
+const sectionFlow = {
+  morningPeak: zeroSectionFlow,
+  offPeak: zeroSectionFlow,
+  eveningPeak: zeroSectionFlow,
+  night: zeroSectionFlow,
+};
+
+const stationFlows = {
+  morningPeak: zeroStationFlow,
+  offPeak: zeroStationFlow,
+  eveningPeak: zeroStationFlow,
+  night: zeroStationFlow,
+};
+
 const summary: TransitSummarySnapshot = {
   gameTimeMs: 0,
   gameDay: 0,
@@ -90,6 +114,8 @@ const summary: TransitSummarySnapshot = {
     offPeakTrains: 4,
     spacingWarnings: [],
     periods: [...periodStats],
+    sectionFlow,
+    stationFlows,
     quality: null,
   }],
 };
@@ -198,6 +224,42 @@ describe('transit worker protocol guards', () => {
     })).toBe(false);
     expect(isTransitWorkerSnapshot({
       ...transitSnapshot,
+      lines: [{
+        ...transitSnapshot.lines[0]!,
+        sectionFlow: {
+          ...transitSnapshot.lines[0]!.sectionFlow,
+          morningPeak: { ...transitSnapshot.lines[0]!.sectionFlow.morningPeak, forward: [] },
+        },
+      }],
+    })).toBe(false);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      lines: [{
+        ...transitSnapshot.lines[0]!,
+        sectionFlow: {
+          ...transitSnapshot.lines[0]!.sectionFlow,
+          eveningPeak: {
+            ...transitSnapshot.lines[0]!.sectionFlow.eveningPeak,
+            forward: [{ load: Number.NaN, capacity: 0, loadFactor: 0 }],
+          },
+        },
+      }],
+    })).toBe(false);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      lines: [{
+        ...transitSnapshot.lines[0]!,
+        sectionFlow: {
+          ...transitSnapshot.lines[0]!.sectionFlow,
+          offPeak: {
+            ...transitSnapshot.lines[0]!.sectionFlow.offPeak,
+            backward: [{ load: 0, capacity: -1, loadFactor: 0 }],
+          },
+        },
+      }],
+    })).toBe(false);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
       lines: [{ ...transitSnapshot.lines[0], periods: [{ ...periodStats[0], hourlyCapacity: -1 }, ...periodStats.slice(1)] }],
     })).toBe(false);
     expect(isTransitWorkerSaveState({
@@ -237,6 +299,8 @@ describe('transit worker protocol guards', () => {
     const lines = snapshot.lines as Array<Record<string, unknown>>;
     delete city.quality;
     delete lines[0]!.quality;
+    delete lines[0]!.sectionFlow;
+    delete lines[0]!.stationFlows;
     expect(isTransitWorkerSaveState(legacy)).toBe(true);
 
     const legacySnapshot = JSON.parse(JSON.stringify(transitSnapshot)) as Record<string, unknown>;

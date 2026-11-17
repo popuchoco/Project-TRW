@@ -94,6 +94,24 @@ export interface LinePeriodStats {
   periodCapacity: number;
 }
 
+export interface SegmentFlow {
+  load: number;
+  capacity: number;
+  loadFactor: number;
+}
+
+export interface LineSectionFlowPeriod {
+  /** Array indices follow line.stationIds order, regardless of travel direction. */
+  forward: SegmentFlow[];
+  backward: SegmentFlow[];
+}
+
+export interface LineStationFlowPeriod {
+  /** Arrays follow line.stationIds order; values count riders boarding/alighting per station. */
+  forward: { boardings: number[]; alightings: number[] };
+  backward: { boardings: number[]; alightings: number[] };
+}
+
 export interface LineDailyStats {
   lineId: string;
   name: string;
@@ -105,6 +123,10 @@ export interface LineDailyStats {
   offPeakTrains: number;
   spacingWarnings: ReturnType<typeof lineSpacingWarnings>;
   periods: LinePeriodStats[];
+  /** Avoid an on-demand round trip; 20 lines × 20 stations adds about 300 KB serialized to the summary. */
+  sectionFlow: Record<SimulationPeriodId, LineSectionFlowPeriod>;
+  /** Station totals support checking that directional section loads conserve riders. */
+  stationFlows: Record<SimulationPeriodId, LineStationFlowPeriod>;
   quality: QualityScore | null;
 }
 
@@ -172,6 +194,11 @@ interface QualityAccumulator {
   loadFactorPassengers: number;
   attempted: number;
   denied: number;
+}
+
+interface LineStationFlowAccumulator {
+  forward: { boardings: number[]; alightings: number[] };
+  backward: { boardings: number[]; alightings: number[] };
 }
 
 function emptyQualityAccumulator(): QualityAccumulator {
@@ -311,8 +338,50 @@ function cloneSnapshot(snapshot: TransitSummarySnapshot): TransitSummarySnapshot
         recommendedKm: [...warning.recommendedKm] as [number, number],
       })),
       periods: line.periods.map((period) => ({ ...period })),
+      sectionFlow: cloneSectionFlow(line),
+      stationFlows: cloneStationFlows(line),
     })),
   };
+}
+
+function cloneSectionFlow(line: LineDailyStats): Record<SimulationPeriodId, LineSectionFlowPeriod> {
+  const fallbackFor = (periodId: SimulationPeriodId): LineSectionFlowPeriod => {
+    const capacity = line.periods.find((period) => period.periodId === periodId)?.periodCapacity ?? 0;
+    const emptySegment = (): SegmentFlow => ({ load: 0, capacity, loadFactor: 0 });
+    return {
+      forward: Array.from({ length: Math.max(0, line.stationCount - 1) }, emptySegment),
+      backward: Array.from({ length: Math.max(0, line.stationCount - 1) }, emptySegment),
+    };
+  };
+  const source = line.sectionFlow as Partial<Record<SimulationPeriodId, LineSectionFlowPeriod>> | undefined;
+  return Object.fromEntries(SIMULATION_BALANCE.periods.map(({ id }) => {
+    const period = source?.[id] ?? fallbackFor(id);
+    return [id, {
+      forward: period.forward.map((segment) => ({ ...segment })),
+      backward: period.backward.map((segment) => ({ ...segment })),
+    }];
+  })) as Record<SimulationPeriodId, LineSectionFlowPeriod>;
+}
+
+function cloneStationFlows(line: LineDailyStats): Record<SimulationPeriodId, LineStationFlowPeriod> {
+  const emptyDirection = () => ({
+    boardings: Array<number>(Math.max(0, line.stationCount)).fill(0),
+    alightings: Array<number>(Math.max(0, line.stationCount)).fill(0),
+  });
+  const source = line.stationFlows as Partial<Record<SimulationPeriodId, LineStationFlowPeriod>> | undefined;
+  return Object.fromEntries(SIMULATION_BALANCE.periods.map(({ id }) => {
+    const period = source?.[id] ?? { forward: emptyDirection(), backward: emptyDirection() };
+    return [id, {
+      forward: {
+        boardings: [...period.forward.boardings],
+        alightings: [...period.forward.alightings],
+      },
+      backward: {
+        boardings: [...period.backward.boardings],
+        alightings: [...period.backward.alightings],
+      },
+    }];
+  })) as Record<SimulationPeriodId, LineStationFlowPeriod>;
 }
 
 function makeEmptySnapshot(stations: readonly Station[], pairCount: number): TransitSummarySnapshot {
@@ -665,6 +734,8 @@ export class TransitSim {
 
     const loadData = this.equilibrium.map((period) => this.buildPeriodLoads(period.periodId, period.routes));
     const maxLoadFactorByPeriodLine = new Map<SimulationPeriodId, Map<string, number>>();
+    const sectionFlowByPeriod = new Map<SimulationPeriodId, Map<string, LineSectionFlowPeriod>>();
+    const stationFlowsByPeriod = new Map<SimulationPeriodId, Map<string, LineStationFlowAccumulator>>();
     let dailyRidership = 0;
     let totalPotentialTrips = 0;
     let deniedBoardings = 0;
@@ -678,6 +749,19 @@ export class TransitSim {
       const periodConfig = SIMULATION_BALANCE.periods.find(({ id }) => id === period.periodId)!;
       const periodLoads = loadData.find(({ periodId }) => periodId === period.periodId)!;
       const acceptedLoads = new Map<string, number>();
+      const stationFlows = new Map<string, LineStationFlowAccumulator>();
+      for (const line of graph.lines) {
+        stationFlows.set(line.id, {
+          forward: {
+            boardings: Array<number>(line.stationIds.length).fill(0),
+            alightings: Array<number>(line.stationIds.length).fill(0),
+          },
+          backward: {
+            boardings: Array<number>(line.stationIds.length).fill(0),
+            alightings: Array<number>(line.stationIds.length).fill(0),
+          },
+        });
+      }
       const maxFactors = new Map<string, number>();
       for (const line of graph.lines) maxFactors.set(line.id, 0);
       totalPotentialTrips += period.potentialTrips;
@@ -719,6 +803,18 @@ export class TransitSim {
         }
 
         for (const leg of route.path.legs) {
+          const firstSegment = leg.segments[0]!;
+          const lastSegment = leg.segments[leg.segments.length - 1]!;
+          const direction = firstSegment.direction === 1 ? 'forward' : 'backward';
+          const boardingIndex = firstSegment.direction === 1
+            ? firstSegment.segmentIndex
+            : firstSegment.segmentIndex + 1;
+          const alightingIndex = firstSegment.direction === 1
+            ? lastSegment.segmentIndex + 1
+            : lastSegment.segmentIndex;
+          const stationFlow = stationFlows.get(leg.lineId)![direction];
+          stationFlow.boardings[boardingIndex] = stationFlow.boardings[boardingIndex]! + accepted;
+          stationFlow.alightings[alightingIndex] = stationFlow.alightings[alightingIndex]! + accepted;
           const from = stationAccumulators.get(leg.fromStationId);
           const to = stationAccumulators.get(leg.toStationId);
           if (from) from.entries += accepted;
@@ -774,6 +870,25 @@ export class TransitSim {
         maxFactors.set(line.id, maxFactor);
         operatingCost += periodLoads.operatingCostByLine.get(line.id) ?? 0;
       }
+      const sectionFlows = new Map<string, LineSectionFlowPeriod>();
+      for (const line of graph.lines) {
+        const sectionFlow: LineSectionFlowPeriod = { forward: [], backward: [] };
+        for (let segmentIndex = 0; segmentIndex + 1 < line.stationIds.length; segmentIndex += 1) {
+          for (const [direction, directionId] of [['forward', 1], ['backward', -1]] as const) {
+            const key = segmentKey(line.id, segmentIndex, directionId);
+            const load = acceptedLoads.get(key) ?? 0;
+            const capacity = periodLoads.periodCapacityBySegment.get(key) ?? 0;
+            sectionFlow[direction].push({
+              load,
+              capacity,
+              loadFactor: capacity > 0 ? load / capacity : 0,
+            });
+          }
+        }
+        sectionFlows.set(line.id, sectionFlow);
+      }
+      sectionFlowByPeriod.set(period.periodId, sectionFlows);
+      stationFlowsByPeriod.set(period.periodId, stationFlows);
       maxLoadFactorByPeriodLine.set(period.periodId, maxFactors);
     }
 
@@ -833,6 +948,23 @@ export class TransitSim {
         offPeakTrains: line.offPeakTrains,
         spacingWarnings: lineSpacingWarnings(line, graph.stations),
         periods,
+        sectionFlow: Object.fromEntries(SIMULATION_BALANCE.periods.map(({ id }) => [
+          id,
+          sectionFlowByPeriod.get(id)!.get(line.id)!,
+        ])) as Record<SimulationPeriodId, LineSectionFlowPeriod>,
+        stationFlows: Object.fromEntries(SIMULATION_BALANCE.periods.map(({ id }) => {
+          const flow = stationFlowsByPeriod.get(id)!.get(line.id)!;
+          return [id, {
+            forward: {
+              boardings: [...flow.forward.boardings],
+              alightings: [...flow.forward.alightings],
+            },
+            backward: {
+              boardings: [...flow.backward.boardings],
+              alightings: [...flow.backward.alightings],
+            },
+          }];
+        })) as Record<SimulationPeriodId, LineStationFlowPeriod>,
         quality: qualityFromAccumulator(lineQuality.get(line.id)!),
       };
     });
