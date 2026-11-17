@@ -16,6 +16,7 @@ import { VillageGeometryLookup } from '../map/village-lookup';
 import { MapCamera, type ScreenPoint } from './camera';
 import { separatePolygonRings } from './polygon-rings';
 import { isRenderFrameActive } from './RenderScheduler';
+import { LABEL_FONT_SIZES, LINE_STYLES, RENDER_PALETTE, STATION_MARKERS } from './tokens';
 import { createEmptyNetwork, haversineKm, isTransferStation, type Network } from '../city/network';
 import { followCameraTarget, type FollowState, type FollowTrainDisplay } from '../city/follow';
 import { compareText } from '../sim/compare';
@@ -180,6 +181,30 @@ function distanceToSegment(point: ScreenPoint, start: ScreenPoint, end: ScreenPo
     ? 0
     : Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
   return Math.hypot(point.x - (start.x + amount * dx), point.y - (start.y + amount * dy));
+}
+
+function drawDashedCasing(
+  graphics: Graphics,
+  start: PlanePoint,
+  end: PlanePoint,
+  width: number,
+  dashLength: number,
+  gapLength: number,
+): void {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return;
+
+  const cycleLength = dashLength + gapLength;
+  for (let offset = 0; offset < length; offset += cycleLength) {
+    const from = offset / length;
+    const to = Math.min(offset + dashLength, length) / length;
+    graphics
+      .moveTo(start.x + dx * from, start.y + dy * from)
+      .lineTo(start.x + dx * to, start.y + dy * to)
+      .stroke({ color: RENDER_PALETTE.lineCasing, width, pixelLine: true });
+  }
 }
 
 /** Builds static Pixi display objects; camera changes only transform and cull them. */
@@ -756,10 +781,32 @@ export class MapRenderer {
         if (!first || !second) continue;
         const start = project([first.lon, first.lat]);
         const end = project([second.lon, second.lat]);
+        if (line.mode === 'brt') {
+          drawDashedCasing(
+            this.networkGraphics,
+            start,
+            end,
+            LINE_STYLES.brt.casingWidth,
+            LINE_STYLES.brt.casingDashLength,
+            LINE_STYLES.brt.casingGapLength,
+          );
+        } else {
+          this.networkGraphics
+            .moveTo(start.x, start.y)
+            .lineTo(end.x, end.y)
+            .stroke({ color: RENDER_PALETTE.lineCasing, width: LINE_STYLES.metro.casingWidth, pixelLine: true });
+        }
         this.networkGraphics
           .moveTo(start.x, start.y)
           .lineTo(end.x, end.y)
-          .stroke({ color, alpha: selected ? 1 : 0.88, width: selected ? 5 : 3.2, pixelLine: true });
+          .stroke({
+            color,
+            alpha: selected ? 1 : 0.92,
+            width: line.mode === 'brt'
+              ? selected ? LINE_STYLES.brt.selectedWidth : LINE_STYLES.brt.width
+              : selected ? LINE_STYLES.metro.selectedWidth : LINE_STYLES.metro.width,
+            pixelLine: true,
+          });
       }
     }
     this.networkRoot.visible = this.metroViewActive;
@@ -772,11 +819,18 @@ export class MapRenderer {
     for (const station of network.stations) {
       const point = this.camera.lonLatToScreen([station.lon, station.lat]);
       const selected = this.selectedNetworkItem?.type === 'station' && this.selectedNetworkItem.id === station.id;
+      if (isTransferStation(network, station.id)) {
+        this.stationGraphics
+          .circle(point.x, point.y, STATION_MARKERS.transferRingRadius)
+          .stroke({ color: RENDER_PALETTE.transferRing, width: STATION_MARKERS.transferRingWidth, pixelLine: true });
+      }
+      const markerRadius = selected ? STATION_MARKERS.selectedRadius : STATION_MARKERS.radius;
+      const coreRadius = selected ? STATION_MARKERS.selectedCoreRadius : STATION_MARKERS.coreRadius;
       this.stationGraphics
-        .circle(point.x, point.y, selected ? 9 : 7)
-        .fill(0xffffff)
-        .circle(point.x, point.y, selected ? 6.2 : 4.8)
-        .fill(selected ? 0xd57435 : 0x215c72);
+        .circle(point.x, point.y, markerRadius)
+        .fill(RENDER_PALETTE.stationOuter)
+        .circle(point.x, point.y, coreRadius)
+        .fill(selected ? RENDER_PALETTE.stationSelected : RENDER_PALETTE.stationFill);
     }
     this.stationGraphics.visible = this.metroViewActive;
   }
@@ -889,10 +943,10 @@ export class MapRenderer {
           text: county.name,
           style: {
             fontFamily: 'system-ui, sans-serif',
-            fontSize: 12,
+            fontSize: LABEL_FONT_SIZES.county,
             fontWeight: '600',
-            fill: 0x48535a,
-            stroke: { color: 0xf7f7f3, width: 3 },
+            fill: RENDER_PALETTE.countyLabel,
+            stroke: { color: RENDER_PALETTE.labelHalo, width: LABEL_FONT_SIZES.haloWidth },
           },
         });
         label.anchor.set(0.5);
@@ -938,10 +992,10 @@ export class MapRenderer {
           text: station.name,
           style: {
             fontFamily: 'system-ui, sans-serif',
-            fontSize: 11,
+            fontSize: LABEL_FONT_SIZES.station,
             fontWeight: '600',
-            fill: 0x26363d,
-            stroke: { color: 0xf7f7f3, width: 3 },
+            fill: RENDER_PALETTE.stationLabel,
+            stroke: { color: RENDER_PALETTE.labelHalo, width: LABEL_FONT_SIZES.haloWidth },
           },
         });
         this.stationLabelById.set(station.id, label);
