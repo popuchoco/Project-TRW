@@ -28,6 +28,7 @@ import {
   type TransitPath,
   type WalkAccess,
 } from './graph';
+import { calculateQualityScore, type QualityScore } from './quality';
 
 export interface ModeShares {
   transit: number;
@@ -61,6 +62,7 @@ export interface CityDailyStats {
   transitShare: number;
   deniedBoardings: number;
   transfers: number;
+  quality: QualityScore | null;
   fareRevenue: number;
   operatingCost: number;
   /** (revenue − cost) / cost; zero when no service cost exists. */
@@ -103,6 +105,7 @@ export interface LineDailyStats {
   offPeakTrains: number;
   spacingWarnings: ReturnType<typeof lineSpacingWarnings>;
   periods: LinePeriodStats[];
+  quality: QualityScore | null;
 }
 
 export interface TransitSummarySnapshot {
@@ -159,6 +162,44 @@ interface PeriodLoadData {
   attemptedLoadBySegment: Map<string, number>;
   operatingCostByLine: Map<string, number>;
   hourlyCapacityByLine: Map<string, number>;
+}
+
+interface QualityAccumulator {
+  passengers: number;
+  waitMinutes: number;
+  transfers: number;
+  weightedLoadFactor: number;
+  loadFactorPassengers: number;
+  attempted: number;
+  denied: number;
+}
+
+function emptyQualityAccumulator(): QualityAccumulator {
+  return {
+    passengers: 0,
+    waitMinutes: 0,
+    transfers: 0,
+    weightedLoadFactor: 0,
+    loadFactorPassengers: 0,
+    attempted: 0,
+    denied: 0,
+  };
+}
+
+function qualityFromAccumulator(accumulator: QualityAccumulator): QualityScore | null {
+  return calculateQualityScore({
+    passengerCount: accumulator.passengers,
+    averageWaitMinutes: accumulator.passengers > 0
+      ? accumulator.waitMinutes / accumulator.passengers
+      : 0,
+    averageTransfers: accumulator.passengers > 0
+      ? accumulator.transfers / accumulator.passengers
+      : 0,
+    averageLoadFactor: accumulator.loadFactorPassengers > 0
+      ? accumulator.weightedLoadFactor / accumulator.loadFactorPassengers
+      : 0,
+    deniedRatio: accumulator.attempted > 0 ? accumulator.denied / accumulator.attempted : 0,
+  });
 }
 
 function compareText(a: string, b: string): number {
@@ -247,7 +288,10 @@ const SERVICE_PERIOD_GROUPS: ReadonlyArray<{
 function cloneSnapshot(snapshot: TransitSummarySnapshot): TransitSummarySnapshot {
   return {
     ...snapshot,
-    city: { ...snapshot.city },
+    city: {
+      ...snapshot.city,
+      quality: snapshot.city.quality ? { ...snapshot.city.quality } : null,
+    },
     stations: snapshot.stations.map((station) => ({
       ...station,
       lineIds: [...station.lineIds],
@@ -255,6 +299,7 @@ function cloneSnapshot(snapshot: TransitSummarySnapshot): TransitSummarySnapshot
     })),
     lines: snapshot.lines.map((line) => ({
       ...line,
+      quality: line.quality ? { ...line.quality } : null,
       spacingWarnings: line.spacingWarnings.map((warning) => ({
         ...warning,
         recommendedKm: [...warning.recommendedKm] as [number, number],
@@ -278,6 +323,7 @@ function makeEmptySnapshot(stations: readonly Station[], pairCount: number): Tra
       transitShare: 0,
       deniedBoardings: 0,
       transfers: 0,
+      quality: null,
       fareRevenue: 0,
       operatingCost: 0,
       profitLossRatio: 0,
@@ -619,6 +665,8 @@ export class TransitSim {
     let transfers = 0;
     let fareRevenue = 0;
     let operatingCost = 0;
+    const cityQuality = emptyQualityAccumulator();
+    const lineQuality = new Map(graph.lines.map((line) => [line.id, emptyQualityAccumulator()]));
 
     for (const period of this.equilibrium) {
       const periodConfig = SIMULATION_BALANCE.periods.find(({ id }) => id === period.periodId)!;
@@ -651,14 +699,31 @@ export class TransitSim {
           stationAccumulators.get(firstStation)!.denied += denied;
         }
         transfers += accepted * route.path.transfers;
+        cityQuality.passengers += accepted;
+        cityQuality.attempted += attempted;
+        cityQuality.denied += denied;
+        cityQuality.transfers += accepted * route.path.transfers;
+        const routeLineIds = new Set(route.path.legs.map(({ lineId }) => lineId));
+        for (const lineId of routeLineIds) {
+          const accumulator = lineQuality.get(lineId)!;
+          accumulator.passengers += accepted;
+          accumulator.attempted += attempted;
+          accumulator.denied += denied;
+          accumulator.transfers += accepted * route.path.transfers;
+        }
 
         for (const leg of route.path.legs) {
           const from = stationAccumulators.get(leg.fromStationId);
           const to = stationAccumulators.get(leg.toStationId);
           if (from) from.entries += accepted;
           if (to) to.exits += accepted;
+          const headway = lineMetrics(graph, leg.lineId).headwaySeconds[period.periodId];
+          if (Number.isFinite(headway)) {
+            const waitMinutes = headway / 120;
+            cityQuality.waitMinutes += accepted * waitMinutes;
+            lineQuality.get(leg.lineId)!.waitMinutes += accepted * waitMinutes;
+          }
           if (periodConfig.usesPeakTrains && accepted > 0) {
-            const headway = lineMetrics(graph, leg.lineId).headwaySeconds[period.periodId];
             if (Number.isFinite(headway)) {
               const estimatedWaiting = accepted / periodConfig.durationHours * headway / 2 / 3_600;
               from?.waitByPeriod.set(
@@ -689,7 +754,15 @@ export class TransitSim {
           for (const direction of [1, -1] as const) {
             const loadKey = segmentKey(line.id, segmentIndex, direction);
             const load = acceptedLoads.get(loadKey) ?? 0;
-            if (periodCapacity > 0) maxFactor = Math.max(maxFactor, load / periodCapacity);
+            const loadFactor = periodCapacity > 0 ? load / periodCapacity : 0;
+            if (periodCapacity > 0) maxFactor = Math.max(maxFactor, loadFactor);
+            if (load > 0) {
+              cityQuality.weightedLoadFactor += load * loadFactor;
+              cityQuality.loadFactorPassengers += load;
+              const lineAccumulator = lineQuality.get(line.id)!;
+              lineAccumulator.weightedLoadFactor += load * loadFactor;
+              lineAccumulator.loadFactorPassengers += load;
+            }
           }
         }
         maxFactors.set(line.id, maxFactor);
@@ -754,6 +827,7 @@ export class TransitSim {
         offPeakTrains: line.offPeakTrains,
         spacingWarnings: lineSpacingWarnings(line, graph.stations),
         periods,
+        quality: qualityFromAccumulator(lineQuality.get(line.id)!),
       };
     });
 
@@ -771,6 +845,7 @@ export class TransitSim {
         transitShare,
         deniedBoardings,
         transfers,
+        quality: qualityFromAccumulator(cityQuality),
         fareRevenue,
         operatingCost,
         profitLossRatio: operatingCost > 0 ? (fareRevenue - operatingCost) / operatingCost : 0,

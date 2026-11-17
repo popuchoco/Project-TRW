@@ -3,6 +3,7 @@ import { isNonNegativeInteger, isTrainCount, isValidTransitCars, MAX_NAME_LENGTH
 import { SIM_SPEEDS, type SimSpeed } from './clock';
 import type { SimContinuationState, SimSnapshot } from './core';
 import type { TransitSimSerializedState, TransitSummarySnapshot } from './transit';
+import type { QualityScore } from './transit/quality';
 
 export interface LegacyStartMessage {
   type: 'start';
@@ -225,7 +226,19 @@ function areFiniteNumbers(value: unknown): value is number[] {
   return Array.isArray(value) && value.every(isFiniteNumber);
 }
 
-function isTransitSummary(value: unknown): value is TransitSummarySnapshot {
+function isQualityScore(value: unknown): value is QualityScore {
+  if (!isRecord(value)) return false;
+  return ['wait', 'transfer', 'crowding', 'denied', 'total'].every((key) => {
+    const score = value[key];
+    return isFiniteNumber(score) && score >= 0 && score <= 100;
+  });
+}
+
+function isQualityOrMissingLegacy(value: unknown, allowMissing: boolean): boolean {
+  return (allowMissing && value === undefined) || value === null || isQualityScore(value);
+}
+
+function isTransitSummary(value: unknown, allowMissingQuality = false): value is TransitSummarySnapshot {
   if (!isRecord(value) || !isNonNegativeNumber(value.gameTimeMs)
     || !isNonNegativeInteger(value.gameDay) || !isPeriodId(value.currentPeriodId)
     || !isNonNegativeInteger(value.pathRecomputeCount) || !isNonNegativeInteger(value.demandPairCount)
@@ -236,6 +249,7 @@ function isTransitSummary(value: unknown): value is TransitSummarySnapshot {
     || !isNonNegativeNumber(city.dailyRidership) || !isNonNegativeNumber(city.potentialTrips)
     || !isFiniteNumber(city.transitShare) || city.transitShare < 0 || city.transitShare > 1
     || !isNonNegativeNumber(city.deniedBoardings) || !isNonNegativeNumber(city.transfers)
+    || !isQualityOrMissingLegacy(city.quality, allowMissingQuality)
     || !isNonNegativeNumber(city.fareRevenue) || !isNonNegativeNumber(city.operatingCost)
     || !isFiniteNumber(city.profitLossRatio)) return false;
 
@@ -256,6 +270,7 @@ function isTransitSummary(value: unknown): value is TransitSummarySnapshot {
       || !isNonNegativeInteger(line.stationCount) || !isNonNegativeNumber(line.lengthKm)
       || !isNonNegativeInteger(line.cars) || !isNonNegativeInteger(line.peakTrains)
       || !isNonNegativeInteger(line.offPeakTrains)
+      || !isQualityOrMissingLegacy(line.quality, allowMissingQuality)
       || !Array.isArray(line.periods) || line.periods.length !== 4
       || !line.periods.every((period: unknown) => isRecord(period)
         && isPeriodId(period.periodId) && typeof period.periodName === 'string'
@@ -277,7 +292,7 @@ function isSerializedTransitState(value: unknown): value is TransitSimSerialized
   if (!isRecord(value) || value.version !== 1 || typeof value.villageFingerprint !== 'string'
     || !isNetwork(value.network) || !isNonNegativeNumber(value.gameTimeMs)
     || !isNonNegativeInteger(value.pathRecomputeCount) || !Array.isArray(value.actualAttempts)
-    || !isTransitSummary(value.snapshot)) return false;
+    || !isTransitSummary(value.snapshot, true)) return false;
   const attemptKeys = new Set<string>();
   for (const attempt of value.actualAttempts) {
     if (!isRecord(attempt) || typeof attempt.key !== 'string' || attemptKeys.has(attempt.key)

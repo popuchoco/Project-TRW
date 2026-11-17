@@ -62,6 +62,7 @@ const summary: TransitSummarySnapshot = {
     transitShare: 0,
     deniedBoardings: 0,
     transfers: 0,
+    quality: null,
     fareRevenue: 0,
     operatingCost: 0,
     profitLossRatio: 0,
@@ -89,6 +90,7 @@ const summary: TransitSummarySnapshot = {
     offPeakTrains: 4,
     spacingWarnings: [],
     periods: [...periodStats],
+    quality: null,
   }],
 };
 
@@ -202,6 +204,32 @@ describe('transit worker protocol guards', () => {
       ...saveState,
       transit: { ...saveState.transit, actualAttempts: [{ key: 'bad', trips: -1 }] },
     })).toBe(false);
+  });
+
+  it('validates quality scores and accepts v2 saves whose older snapshots lack them', () => {
+    const numericQuality = { wait: 80, transfer: 70, crowding: 60, denied: 50, total: 66 };
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      city: { ...transitSnapshot.city, quality: numericQuality },
+      lines: [{ ...transitSnapshot.lines[0]!, quality: numericQuality }],
+    })).toBe(true);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      city: { ...transitSnapshot.city, quality: { ...numericQuality, total: 100.1 } },
+    })).toBe(false);
+
+    const legacy = JSON.parse(JSON.stringify(saveState)) as Record<string, unknown>;
+    const transit = legacy.transit as Record<string, unknown>;
+    const snapshot = transit.snapshot as Record<string, unknown>;
+    const city = snapshot.city as Record<string, unknown>;
+    const lines = snapshot.lines as Array<Record<string, unknown>>;
+    delete city.quality;
+    delete lines[0]!.quality;
+    expect(isTransitWorkerSaveState(legacy)).toBe(true);
+
+    const legacySnapshot = JSON.parse(JSON.stringify(transitSnapshot)) as Record<string, unknown>;
+    delete (legacySnapshot.city as Record<string, unknown>).quality;
+    expect(isTransitWorkerSnapshot(legacySnapshot)).toBe(false);
   });
 
   it('rejects train counts and car lengths outside the shared limits', () => {
