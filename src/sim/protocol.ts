@@ -1,4 +1,5 @@
 import type { Network } from '../city/network';
+import { isNonNegativeInteger, isTrainCount, isValidTransitCars, MAX_NAME_LENGTH } from '../city/limits';
 import { SIM_SPEEDS, type SimSpeed } from './clock';
 import type { SimContinuationState, SimSnapshot } from './core';
 import type { TransitSimSerializedState, TransitSummarySnapshot } from './transit';
@@ -143,10 +144,6 @@ function isNonNegativeNumber(value: unknown): value is number {
   return isFiniteNumber(value) && value >= 0;
 }
 
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
 function isSeed(value: unknown): value is number {
   return isNonNegativeInteger(value) && value <= 0xffff_ffff;
 }
@@ -196,7 +193,7 @@ function isNetwork(value: unknown): value is Network {
   const stationIds = new Set<string>();
   for (const station of value.stations) {
     if (!isRecord(station) || typeof station.id !== 'string' || station.id.length === 0
-      || stationIds.has(station.id) || typeof station.name !== 'string'
+      || stationIds.has(station.id) || typeof station.name !== 'string' || station.name.length > MAX_NAME_LENGTH
       || !isFiniteNumber(station.lon) || station.lon < -180 || station.lon > 180
       || !isFiniteNumber(station.lat) || station.lat < -90 || station.lat > 90
       || (station.nameManual !== undefined && typeof station.nameManual !== 'boolean')) return false;
@@ -209,8 +206,9 @@ function isNetwork(value: unknown): value is Network {
       || (line.mode !== 'brt' && line.mode !== 'metro') || !Array.isArray(line.stationIds)
       || line.stationIds.length < 2 || !line.stationIds.every((id: unknown) => typeof id === 'string' && stationIds.has(id))
       || new Set(line.stationIds).size !== line.stationIds.length
-      || !isNonNegativeInteger(line.peakTrains) || !isNonNegativeInteger(line.offPeakTrains)
-      || !isNonNegativeInteger(line.cars) || line.cars < 1 || typeof line.name !== 'string'
+      || !isTrainCount(line.peakTrains) || !isTrainCount(line.offPeakTrains)
+      || !isValidTransitCars(line.mode, line.cars) || typeof line.name !== 'string'
+      || line.name.length > MAX_NAME_LENGTH
       || typeof line.color !== 'string') return false;
     lineIds.add(line.id);
   }

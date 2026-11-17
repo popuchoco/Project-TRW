@@ -204,6 +204,30 @@ describe('transit worker protocol guards', () => {
     })).toBe(false);
   });
 
+  it('rejects train counts and car lengths outside the shared limits', () => {
+    for (const field of ['peakTrains', 'offPeakTrains'] as const) {
+      expect(isTransitSetNetworkMessage({
+        type: 'setNetwork',
+        network: { ...network, lines: [{ ...network.lines[0]!, [field]: 100_001 }] },
+      })).toBe(false);
+    }
+    expect(isTransitSetNetworkMessage({
+      type: 'setNetwork',
+      network: { ...network, lines: [{ ...network.lines[0]!, cars: 7 }] },
+    })).toBe(false);
+    expect(isTransitSetNetworkMessage({
+      type: 'setNetwork',
+      network: { ...network, lines: [{ ...network.lines[0]!, cars: 2 }] },
+    })).toBe(false);
+  });
+
+  it('rejects a fractional village population in the kind data source guard', () => {
+    expect(isTransitStartMessage({
+      ...startMessage,
+      villages: { kind: 'data', villages: [{ VILLCODE: 'x', population: 1.5, demandPoint: [121, 25] }] },
+    })).toBe(false);
+  });
+
   it('rejects missing transit state and malformed train positions', () => {
     expect(isTransitLoadStateMessage({ type: 'loadState', requestId: 'load-1' })).toBe(false);
     expect(isTransitWorkerSnapshot({

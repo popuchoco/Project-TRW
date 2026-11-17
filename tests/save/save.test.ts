@@ -94,6 +94,31 @@ describe("save records", () => {
     expect(() => importSaveJson(JSON.stringify(record(invalidSimulation)))).toThrow("routeProgress");
   });
 
+  it.each([
+    ["車站名稱", (payload: SavePayloadV2) => { payload.network.stations[0]!.name = "站".repeat(81); }],
+    ["路線名稱", (payload: SavePayloadV2) => { payload.network.lines[0]!.name = "線".repeat(81); }],
+  ])("rejects an imported %s longer than 80 characters with a readable error", (_name, changeName) => {
+    const payload = validPayload();
+    changeName(payload);
+    expect(() => importSaveJson(JSON.stringify({ schemaVersion: 2, savedAt: 100, payload })))
+      .toThrow("不得超過 80 字");
+  });
+
+  it("rejects imported train counts and car lengths outside the shared limits", () => {
+    const makeRecord = (payload: SavePayloadV2) => ({ schemaVersion: 2, savedAt: 100, payload });
+    const excessivePeak = validPayload();
+    excessivePeak.network.lines[0]!.peakTrains = 100_001;
+    expect(() => validateSaveRecord(makeRecord(excessivePeak))).toThrow("peakTrains");
+
+    const excessiveOffPeak = validPayload();
+    excessiveOffPeak.network.lines[0]!.offPeakTrains = 100_001;
+    expect(() => validateSaveRecord(makeRecord(excessiveOffPeak))).toThrow("offPeakTrains");
+
+    const excessiveCars = validPayload();
+    excessiveCars.network.lines[0]!.cars = 7;
+    expect(() => validateSaveRecord(makeRecord(excessiveCars))).toThrow("車節數");
+  });
+
   it("saves the current providers and exports the exact saved payload", async () => {
     const storage = new MemorySaveStorage();
     const payload = validPayload();

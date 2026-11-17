@@ -6,6 +6,7 @@ import {
   type Line,
   type Network,
 } from '../city/network';
+import { MAX_NAME_LENGTH } from '../city/limits';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
 import type { TransitSummarySnapshot } from '../sim/transit';
 
@@ -290,7 +291,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const renameForm = element('form', 'station-rename-form');
   const renameInput = element('input', 'station-rename-input');
   renameInput.type = 'text';
-  renameInput.maxLength = 80;
+  renameInput.maxLength = MAX_NAME_LENGTH;
   renameInput.required = true;
   renameInput.setAttribute('aria-label', '車站名稱');
   const renameButton = element('button', 'source-button', '更名');

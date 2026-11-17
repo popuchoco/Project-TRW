@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TransitWorkerRuntime } from '../../src/sim/worker-runtime';
+import { loadVillageSource, TransitWorkerRuntime } from '../../src/sim/worker-runtime';
 import { createEmptyNetwork, type Network } from '../../src/city/network';
 import type { TransitWorkerSaveState, TransitWorkerSnapshot, VillageSource } from '../../src/sim/protocol';
 
@@ -37,6 +37,13 @@ async function saveState(runtime: TransitWorkerRuntime): Promise<TransitWorkerSa
 }
 
 describe('TransitWorkerRuntime', () => {
+  it('rejects a fractional population while decoding village attributes', async () => {
+    await expect(loadVillageSource({
+      kind: 'data',
+      villages: [{ VILLCODE: 'fractional', population: 1.5, demandPoint: [121, 25] }],
+    } as unknown as VillageSource)).rejects.toThrow('invalid row');
+  });
+
   it('recomputes a changed network and emits its updated snapshot from the handler', async () => {
     const runtime = new TransitWorkerRuntime();
     const started = await runtime.handle({
