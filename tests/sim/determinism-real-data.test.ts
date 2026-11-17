@@ -45,6 +45,23 @@ function strip(snapshot: TransitWorkerSnapshot | undefined): unknown {
   return { ...snapshot, recomputeMs: 0 };
 }
 
+async function representative(runtime: TransitWorkerRuntime, stationId: string): Promise<unknown> {
+  const outputs = await runtime.handle({ type: 'requestRepresentativePassenger', requestId: `rep-${stationId}`, stationId });
+  const result = outputs.find((message) => message.type === 'representativePassengerResult');
+  return result && 'passenger' in result ? result.passenger : undefined;
+}
+
+/** Quality, section flow and representative passenger must all be present before comparing them. */
+async function derived(runtime: TransitWorkerRuntime, snapshot: TransitWorkerSnapshot | undefined): Promise<unknown> {
+  const metro = snapshot?.lines.find(({ lineId }) => lineId === 'l13');
+  expect(snapshot?.city.quality).not.toBeNull();
+  expect(metro?.quality).not.toBeNull();
+  expect(metro?.sectionFlow).toBeDefined();
+  const passengers = await Promise.all(['s1', 's5', 's11'].map((stationId) => representative(runtime, stationId)));
+  expect(passengers[1]).toBeTruthy();
+  return { cityQuality: snapshot?.city.quality, lineQuality: metro?.quality, sectionFlow: metro?.sectionFlow, passengers };
+}
+
 async function runScripted(runtime: TransitWorkerRuntime, ticks: number, editAt: number): Promise<TransitWorkerSnapshot | undefined> {
   let snapshot: TransitWorkerSnapshot | undefined;
   for (let tick = 0; tick < ticks; tick += 1) {
@@ -73,6 +90,14 @@ describe('worker-runtime determinism on committed 北北 data', () => {
     expect(strip(second)).toEqual(strip(first));
   });
 
+  it('quality, section flow and representative passenger are identical across two runtimes', async () => {
+    const runtimeA = await started(7);
+    const runtimeB = await started(7);
+    const first = await runScripted(runtimeA, 2 * 1_440, 900);
+    const second = await runScripted(runtimeB, 2 * 1_440, 900);
+    expect(await derived(runtimeB, second)).toEqual(await derived(runtimeA, first));
+  });
+
   it('save at day 1 and load into a fresh runtime continues identically', async () => {
     const uninterrupted = await started(7);
     await runScripted(uninterrupted, 1_440, -1);
@@ -90,5 +115,6 @@ describe('worker-runtime determinism on committed 北北 data', () => {
     const b = await runScripted(restored, 1_440, 300);
     expect(a?.city.dailyRidership ?? 0).toBeGreaterThan(0);
     expect(strip(b)).toEqual(strip(a));
+    expect(await derived(restored, b)).toEqual(await derived(uninterrupted, a));
   });
 });
