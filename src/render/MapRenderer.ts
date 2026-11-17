@@ -16,8 +16,9 @@ import { VillageGeometryLookup } from '../map/village-lookup';
 import { MapCamera, type ScreenPoint } from './camera';
 import { separatePolygonRings } from './polygon-rings';
 import { isRenderFrameActive } from './RenderScheduler';
-import { createEmptyNetwork, haversineKm, type Network } from '../city/network';
+import { createEmptyNetwork, haversineKm, isTransferStation, type Network } from '../city/network';
 import { followCameraTarget, type FollowState, type FollowTrainDisplay } from '../city/follow';
+import { compareText } from '../sim/compare';
 import {
   bboxForTowns,
   chooseInitialMetroBounds,
@@ -26,6 +27,13 @@ import {
   type SavedCameraView,
 } from '../city/metro-focus';
 import type { TrainPosition } from '../sim/protocol';
+import {
+  placeLabels,
+  STATION_LABEL_FAR_TOP_N,
+  STATION_LABEL_FAR_ZOOM_THRESHOLD,
+  STATION_LABEL_GRID_CELL,
+  STATION_LABEL_STATION_RADIUS,
+} from './labels';
 
 type CountyLayers = Map<string, Container>;
 type InsetId = 'diaoyutai' | 'dongsha' | 'nansha';
@@ -62,10 +70,6 @@ interface FollowHandlers {
 const TRAIN_MARKER_HIT_RADIUS_PX = 12;
 // 可調：忽略方向估算中的微小位置變化。
 const TRAIN_DIRECTION_EPSILON_KM = 0.000001;
-
-function compareText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
 
 function routeProgress(train: TrainPosition, network: Network): RouteProgress | undefined {
   const line = network.lines.find(({ id }) => id === train.lineId);
@@ -188,6 +192,7 @@ export class MapRenderer {
   private readonly selectionRoot = new Container();
   private readonly screenRoot = new Container();
   private readonly labelsRoot = new Container();
+  private readonly stationLabelsRoot = new Container();
   private readonly stationGraphics = new Graphics();
   private readonly trainGraphics = new Graphics();
   private readonly editPreviewGraphics = new Graphics();
@@ -207,6 +212,7 @@ export class MapRenderer {
   private readonly lod3Indexes = new Map<string, ReturnType<typeof buildTownIndex>>();
   private readonly indexes = new Map<LodId, ReturnType<typeof buildTownIndex>>();
   private readonly labelByCounty = new Map<string, Text>();
+  private readonly stationLabelById = new Map<string, Text>();
   private readonly townBounds: QuadTree<DataManifest['towns'][number]>;
   private readonly insetFeatures: TownFeature[];
   private readonly northNorthBounds: BBox;
@@ -218,6 +224,16 @@ export class MapRenderer {
   private villageDensityBreaks: number[] = [];
   private network: Network = createEmptyNetwork();
   private networkPreview?: Network;
+  private stationDailyRidership = new Map<string, number>();
+  private stationLabelsDirty = true;
+  private lastStationLabelsLayout?: {
+    network: Network;
+    centerX: number;
+    centerY: number;
+    scale: number;
+    width: number;
+    height: number;
+  };
   private selectedNetworkItem?: NetworkSelection;
   private trainPositions: TrainPosition[] = [];
   private followState: FollowState = { kind: 'idle' };
@@ -260,11 +276,13 @@ export class MapRenderer {
     this.networkRoot.visible = false;
     this.stationGraphics.visible = false;
     this.trainGraphics.visible = false;
+    this.stationLabelsRoot.visible = false;
     this.app.stage.addChild(this.mapRoot, this.villagesRoot, this.networkRoot, this.selectionRoot, this.screenRoot);
     this.networkRoot.addChild(this.networkGraphics);
     this.screenRoot.addChild(
       this.labelsRoot,
       this.stationGraphics,
+      this.stationLabelsRoot,
       this.trainGraphics,
       this.editPreviewGraphics,
       this.simulationRoot,
@@ -303,16 +321,36 @@ export class MapRenderer {
 
   setNetwork(network: Network): void {
     this.network = network;
+    this.stationLabelsDirty = true;
     this.trainDirections.clear();
     this.networkPreview = undefined;
     this.drawNetwork();
+    this.updateStationNameLabels();
     this.drawTrainMarkers();
     this.requestRender();
   }
 
   setNetworkPreview(network?: Network): void {
     this.networkPreview = network;
+    this.stationLabelsDirty = true;
     this.drawNetwork();
+    this.updateStationNameLabels();
+    this.requestRender();
+  }
+
+  /** Supplies per-station simulated daily entries and exits for label priority. */
+  setStationDailyRidership(stats: readonly { stationId: string; dailyRidership: number }[]): void {
+    const next = new Map(stats.map(({ stationId, dailyRidership }) => [
+      stationId,
+      Number.isFinite(dailyRidership) ? Math.max(0, dailyRidership) : 0,
+    ]));
+    if (next.size === this.stationDailyRidership.size
+      && [...next].every(([stationId, ridership]) => this.stationDailyRidership.get(stationId) === ridership)) {
+      return;
+    }
+    this.stationDailyRidership = next;
+    this.stationLabelsDirty = true;
+    this.updateStationNameLabels();
     this.requestRender();
   }
 
@@ -533,6 +571,7 @@ export class MapRenderer {
     this.metroViewActive = true;
     this.networkRoot.visible = true;
     this.stationGraphics.visible = true;
+    this.stationLabelsRoot.visible = true;
     this.trainGraphics.visible = true;
     this.simulationRoot.visible = false;
     this.selectedCode = undefined;
@@ -544,6 +583,7 @@ export class MapRenderer {
     });
     this.metroInitialFocusPending = Boolean(initialBounds && !this.villageGeometry);
     if (initialBounds) this.focusBounds(initialBounds);
+    this.updateStationNameLabels();
     this.villagesRoot.visible = Boolean(this.villageGeometry);
     this.onMetroViewChange(true);
   }
@@ -559,6 +599,7 @@ export class MapRenderer {
     this.villagesRoot.visible = false;
     this.networkRoot.visible = false;
     this.stationGraphics.visible = false;
+    this.stationLabelsRoot.visible = false;
     this.trainGraphics.visible = false;
     this.simulationRoot.visible = true;
     const islandView = this.islandViewBeforeMetro;
@@ -801,6 +842,7 @@ export class MapRenderer {
       .filter((code, index, codes) => codes.indexOf(code) === index);
     this.refreshVisibility();
     this.positionCountyLabels();
+    this.updateStationNameLabels();
     this.drawStationMarkers();
     this.drawTrainMarkers();
     this.positionSimulationMarker();
@@ -863,6 +905,94 @@ export class MapRenderer {
       label.visible = !this.metroViewActive && position.x >= -40 && position.x <= this.camera.width + 40 &&
         position.y >= -24 && position.y <= this.camera.height + 24;
     }
+  }
+
+  private updateStationNameLabels(): void {
+    this.stationLabelsRoot.visible = this.metroViewActive;
+    if (!this.metroViewActive) return;
+
+    const network = this.networkPreview ?? this.network;
+    const previous = this.lastStationLabelsLayout;
+    if (!this.stationLabelsDirty && previous?.network === network
+      && previous.centerX === this.camera.center.x
+      && previous.centerY === this.camera.center.y
+      && previous.scale === this.camera.scale
+      && previous.width === this.camera.width
+      && previous.height === this.camera.height) {
+      return;
+    }
+
+    const stations = [...network.stations].sort((a, b) => compareText(a.id, b.id));
+    const activeIds = new Set(stations.map(({ id }) => id));
+    for (const [stationId, label] of this.stationLabelById) {
+      if (activeIds.has(stationId)) continue;
+      this.stationLabelsRoot.removeChild(label);
+      label.destroy();
+      this.stationLabelById.delete(stationId);
+    }
+
+    const items = stations.map((station) => {
+      let label = this.stationLabelById.get(station.id);
+      if (!label) {
+        label = new Text({
+          text: station.name,
+          style: {
+            fontFamily: 'system-ui, sans-serif',
+            fontSize: 11,
+            fontWeight: '600',
+            fill: 0x26363d,
+            stroke: { color: 0xf7f7f3, width: 3 },
+          },
+        });
+        this.stationLabelById.set(station.id, label);
+        this.stationLabelsRoot.addChild(label);
+      } else if (label.text !== station.name) {
+        label.text = station.name;
+      }
+      const point = this.camera.lonLatToScreen([station.lon, station.lat]);
+      return {
+        id: station.id,
+        name: station.name,
+        x: point.x,
+        y: point.y,
+        w: label.width,
+        h: label.height,
+        isTransfer: isTransferStation(network, station.id),
+        dailyRidership: this.stationDailyRidership.get(station.id) ?? 0,
+      };
+    });
+    const placements = placeLabels(items, {
+      zoom: this.camera.zoom,
+      farZoomThreshold: STATION_LABEL_FAR_ZOOM_THRESHOLD,
+      farTopN: STATION_LABEL_FAR_TOP_N,
+      stationRadius: STATION_LABEL_STATION_RADIUS,
+      gridCell: STATION_LABEL_GRID_CELL,
+    });
+
+    for (const placement of placements) {
+      const label = this.stationLabelById.get(placement.id);
+      if (!label) continue;
+      if ('hidden' in placement) {
+        label.visible = false;
+        continue;
+      }
+      label.anchor.set(placement.anchor.x, placement.anchor.y);
+      label.position.set(placement.x, placement.y);
+      const left = placement.x - label.width * placement.anchor.x;
+      const top = placement.y - label.height * placement.anchor.y;
+      label.visible = left <= this.camera.width && left + label.width >= 0
+        && top <= this.camera.height && top + label.height >= 0;
+    }
+
+    this.lastStationLabelsLayout = {
+      network,
+      centerX: this.camera.center.x,
+      centerY: this.camera.center.y,
+      scale: this.camera.scale,
+      width: this.camera.width,
+      height: this.camera.height,
+    };
+    this.stationLabelsDirty = false;
   }
 
   private rebuildSelection(): void {
