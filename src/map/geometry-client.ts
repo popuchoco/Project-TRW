@@ -38,7 +38,11 @@ function isGeometryData(value: unknown): value is VillageGeometryData {
   for (let index = 0; index < geometry.ringVillageIndices.length; index += 1) {
     if (geometry.ringVillageIndices[index]! >= geometry.villages.length || geometry.ringIsHole[index]! > 1) return false;
   }
-  return geometry.villages.every((village) => typeof village.VILLCODE === 'string');
+  return geometry.villages.every((village) => typeof village.VILLCODE === 'string'
+    && Number.isFinite(village.areaKm2) && village.areaKm2 > 0
+    && (village.populationMatched
+      ? Number.isFinite(village.densityPerKm2) && village.densityPerKm2! >= 0
+      : village.densityPerKm2 === null));
 }
 
 /** Thin request client; geometry decoding and projection stay inside the worker. */

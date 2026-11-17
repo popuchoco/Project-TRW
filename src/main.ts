@@ -1,6 +1,9 @@
 import { Application } from 'pixi.js';
 import { MapDataLoader } from './map/loader';
+import { VillageGeometryClient } from './map/geometry-client';
 import { scheduleOnceOnIdleOrTrigger, type LodId } from './map/lod';
+import { DENSITY_PALETTE } from './map/village-density';
+import type { VillageGeometryRecord } from './map/village-geometry';
 import { MapRenderer } from './render/MapRenderer';
 import { importSaveFile, triggerSaveDownload } from './save/import-export';
 import { IndexedDbSaveStorage } from './save/storage';
@@ -83,6 +86,9 @@ function createUi(mount: HTMLElement): {
   fpsSelect: HTMLSelectElement;
   simPauseButton: HTMLButtonElement;
   simSpeedSelect: HTMLSelectElement;
+  enterMetroButton: HTMLButtonElement;
+  returnIslandButton: HTMLButtonElement;
+  densityLegend: HTMLElement;
   updateBanner: HTMLElement;
   updateButton: HTMLButtonElement;
   fileInput: HTMLInputElement;
@@ -143,6 +149,16 @@ function createUi(mount: HTMLElement): {
   fileInput.setAttribute('aria-label', '選擇存檔 JSON 檔');
   toolbar.append(product, settings, simPauseButton, simSpeedSetting, sources, exportButton, importButton, fileInput);
 
+  const enterMetroButton = makeElement('button', 'source-button', '北北都會');
+  enterMetroButton.type = 'button';
+  enterMetroButton.dataset.action = 'enter-metro-view';
+  const returnIslandButton = makeElement('button', 'source-button', '返回全島');
+  returnIslandButton.type = 'button';
+  returnIslandButton.dataset.action = 'return-island-view';
+  returnIslandButton.hidden = true;
+  toolbar.insertBefore(enterMetroButton, sources);
+  toolbar.insertBefore(returnIslandButton, sources);
+
   const status = makeElement('div', 'map-status', '載入地圖資料中…');
   status.setAttribute('role', 'status');
   const updateBanner = makeElement('section', 'update-banner');
@@ -158,8 +174,50 @@ function createUi(mount: HTMLElement): {
   const infoText = makeElement('strong', 'town-info-text');
   infoCard.append(infoText);
 
-  mount.append(toolbar, status, updateBanner, sourceDialog, infoCard);
-  return { infoCard, infoText, status, fpsSelect, simPauseButton, simSpeedSelect, updateBanner, updateButton, fileInput };
+  const densityLegend = makeElement('section', 'density-legend');
+  densityLegend.hidden = true;
+  densityLegend.setAttribute('aria-label', '村里人口密度圖例');
+
+  mount.append(toolbar, status, updateBanner, sourceDialog, infoCard, densityLegend);
+  return {
+    infoCard,
+    infoText,
+    status,
+    fpsSelect,
+    simPauseButton,
+    simSpeedSelect,
+    enterMetroButton,
+    returnIslandButton,
+    densityLegend,
+    updateBanner,
+    updateButton,
+    fileInput,
+  };
+}
+
+function renderDensityLegend(container: HTMLElement, breaks: readonly number[]): void {
+  const heading = makeElement('strong', 'density-legend-title', '人口密度（人/km²）');
+  const list = makeElement('div', 'density-legend-list');
+  const format = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
+  for (let classIndex = 0; classIndex < DENSITY_PALETTE.length; classIndex += 1) {
+    const first = classIndex === 0 ? undefined : breaks[classIndex - 1];
+    const last = classIndex < breaks.length ? breaks[classIndex] : undefined;
+    const label = first === undefined
+      ? `≤ ${format.format(Math.round(last ?? 0))}`
+      : last === undefined
+        ? `> ${format.format(Math.round(first))}`
+        : `${format.format(Math.round(first))}–${format.format(Math.round(last))}`;
+    const row = makeElement('div', 'density-legend-item');
+    const swatch = makeElement('span', 'density-legend-swatch');
+    swatch.style.backgroundColor = `#${DENSITY_PALETTE[classIndex]!.toString(16).padStart(6, '0')}`;
+    row.append(swatch, makeElement('span', '', label));
+    list.append(row);
+  }
+  const unmatched = makeElement('div', 'density-legend-item');
+  const unmatchedSwatch = makeElement('span', 'density-legend-swatch density-legend-unmatched');
+  unmatched.append(unmatchedSwatch, makeElement('span', '', '未編定村里'));
+  list.append(unmatched);
+  container.replaceChildren(heading, list);
 }
 
 function initialFpsSetting(): FpsSetting {
@@ -322,6 +380,32 @@ async function startApp(): Promise<void> {
   });
 
   const loader = new MapDataLoader(import.meta.env.BASE_URL);
+  const rendererState: { current?: MapRenderer } = {};
+  let villageGeometryClient: VillageGeometryClient | undefined;
+  let villageGeometryPromise: Promise<void> | undefined;
+  let hasVillageGeometry = false;
+  const ensureVillageGeometry = (): void => {
+    if (villageGeometryPromise) return;
+    ui.status.textContent = '載入北北村里資料中…';
+    ui.status.hidden = false;
+    villageGeometryClient ??= new VillageGeometryClient();
+    const dataBase = new URL(import.meta.env.BASE_URL, document.baseURI);
+    villageGeometryPromise = villageGeometryClient.load(
+      new URL('data/villages-6300065000.topo.json', dataBase).href,
+      new URL('data/villages-6300065000.json', dataBase).href,
+    ).then((geometry) => {
+      const breaks = rendererState.current?.setVillageGeometry(geometry);
+      if (breaks) renderDensityLegend(ui.densityLegend, breaks);
+      hasVillageGeometry = true;
+      ui.densityLegend.hidden = !rendererState.current?.isMetroView;
+      ui.status.hidden = true;
+    }).catch((error: unknown) => {
+      console.error('Unable to load North–North village geometry', error);
+      ui.status.textContent = '北北村里資料載入失敗，請返回全島後再試。';
+      ui.status.hidden = false;
+      villageGeometryPromise = undefined;
+    });
+  };
   const manifest = await loader.loadManifest();
   const [initialFeatures, insetFeatures] = await Promise.all([
     loader.loadLod('lod0'),
@@ -338,7 +422,7 @@ async function startApp(): Promise<void> {
     const existing = pendingLods.get(lod);
     if (existing) return existing;
     const request = loader.loadLod(lod).then((features) => {
-      renderer.setLodFeatures(lod, features);
+      rendererState.current?.setLodFeatures(lod, features);
       loadedLods.add(lod);
       ui.status.hidden = true;
     }).catch((error: unknown) => {
@@ -356,7 +440,7 @@ async function startApp(): Promise<void> {
     const existing = pendingCounties.get(countyCode);
     if (existing) return existing;
     const request = loader.loadCountyLod3(countyCode).then((features) => {
-      renderer.setLod3County(countyCode, features);
+      rendererState.current?.setLod3County(countyCode, features);
       loadedCountyLods.add(countyCode);
     }).catch((error: unknown) => {
       console.error(`Unable to load LOD3 county ${countyCode}`, error);
@@ -384,7 +468,7 @@ async function startApp(): Promise<void> {
     }
   };
 
-  const renderer = new MapRenderer(
+  const createdRenderer = new MapRenderer(
     pixiApp,
     manifest,
     initialFeatures,
@@ -400,14 +484,34 @@ async function startApp(): Promise<void> {
       visibleCountyCount = counties.length;
       syncMapData(lod, counties);
     },
+    (village: VillageGeometryRecord | undefined) => {
+      if (!village) {
+        ui.infoCard.hidden = true;
+        return;
+      }
+      const name = village.populationMatched && village.name.length > 0 ? village.name : '未編定村里';
+      ui.infoText.textContent = `${name}｜人口 ${village.population.toLocaleString('zh-TW')} 人｜${village.townName}`;
+      ui.infoCard.hidden = false;
+    },
+    (active: boolean) => {
+      ui.enterMetroButton.hidden = active;
+      ui.returnIslandButton.hidden = !active;
+      ui.infoCard.hidden = true;
+      ui.densityLegend.hidden = !active || !hasVillageGeometry;
+      if (active) ensureVillageGeometry();
+      else if (ui.status.textContent === '載入北北村里資料中…') ui.status.hidden = true;
+    },
   );
-  mapRenderer = renderer;
+  rendererState.current = createdRenderer;
+  mapRenderer = createdRenderer;
+  ui.enterMetroButton.addEventListener('click', () => createdRenderer.enterMetroView());
+  ui.returnIslandButton.addEventListener('click', () => createdRenderer.returnToIslandView());
   if (restoredPayload) {
-    renderer.setCameraView(restoredPayload.camera.x, restoredPayload.camera.y, restoredPayload.camera.zoom);
+    createdRenderer.setCameraView(restoredPayload.camera.x, restoredPayload.camera.y, restoredPayload.camera.zoom);
   }
 
-  currentLodForStats = renderer.currentLod;
-  visibleCountyCount = renderer.countiesInView.length;
+  currentLodForStats = createdRenderer.currentLod;
+  visibleCountyCount = createdRenderer.countiesInView.length;
 
   // Initial full-island frame is drawn synchronously before signaling ready.
   pixiApp.renderer.render(pixiApp.stage);
@@ -427,7 +531,7 @@ async function startApp(): Promise<void> {
   }
   pixiApp.ticker.add(() => {
     const entity = simulationClient?.getInterpolatedEntities()[0];
-    if (entity) renderer.setSimulationMarker(entity.lon, entity.lat);
+    if (entity) createdRenderer.setSimulationMarker(entity.lon, entity.lat);
   });
   updateSimulationUi();
   pixiApp.ticker.start();

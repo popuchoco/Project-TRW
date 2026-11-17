@@ -1,8 +1,9 @@
 import { project } from './projection';
 import { decodeTopology } from './topology';
-import type { MultiPolygonGeometry, Position, Topology } from './types';
+import { populationDensity } from './village-density';
+import type { MultiPolygonGeometry, PolygonCoordinates, Position, Topology } from './types';
 
-export const VILLAGE_GEOMETRY_VERSION = 1 as const;
+export const VILLAGE_GEOMETRY_VERSION = 2 as const;
 export const VILLAGE_PROJECTION_VERSION = 'trw-equirectangular-23.7-v1' as const;
 
 export interface VillageGeometryAttribute {
@@ -14,6 +15,13 @@ export interface VillageGeometryAttribute {
   households: number;
   populationMatched: boolean;
   demandPoint: Position;
+}
+
+export interface VillageGeometryRecord extends VillageGeometryAttribute {
+  /** Spherical polygon area, with interior rings subtracted, in km². */
+  areaKm2: number;
+  /** Worker-computed density in people/km²; unmatched villages have no density. */
+  densityPerKm2: number | null;
 }
 
 export interface VillageGeometryData {
@@ -31,7 +39,7 @@ export interface VillageGeometryData {
   ringPolygonIndices: Uint32Array;
   /** 0 for polygon exteriors, 1 for interior rings. */
   ringIsHole: Uint8Array;
-  villages: VillageGeometryAttribute[];
+  villages: VillageGeometryRecord[];
 }
 
 interface VillageTopologyFeature {
@@ -58,16 +66,44 @@ function copyAndValidateAttribute(source: VillageGeometryAttribute): VillageGeom
   return { ...source, demandPoint: [source.demandPoint[0], source.demandPoint[1]] };
 }
 
+const EARTH_RADIUS_KM = 6371.0088;
+const DEGREES_TO_RADIANS = Math.PI / 180;
+
+function sphericalRingAreaKm2(ring: Position[]): number {
+  let sum = 0;
+  for (let index = 0; index < ring.length; index += 1) {
+    const current = ring[index]!;
+    const next = ring[(index + 1) % ring.length]!;
+    const longitudeDelta = (next[0] - current[0]) * DEGREES_TO_RADIANS;
+    const currentLatitude = current[1] * DEGREES_TO_RADIANS;
+    const nextLatitude = next[1] * DEGREES_TO_RADIANS;
+    sum += longitudeDelta * (2 + Math.sin(currentLatitude) + Math.sin(nextLatitude));
+  }
+  return Math.abs(sum) * EARTH_RADIUS_KM * EARTH_RADIUS_KM / 2;
+}
+
+/** Spherical area in km²; the first ring is the exterior and later rings are holes. */
+export function multiPolygonAreaKm2(polygons: PolygonCoordinates): number {
+  let area = 0;
+  for (const polygon of polygons) {
+    const [outer, ...holes] = polygon;
+    if (!outer) continue;
+    area += sphericalRingAreaKm2(outer);
+    for (const hole of holes) area -= sphericalRingAreaKm2(hole);
+  }
+  return Math.max(0, area);
+}
+
 /** Decode village TopoJSON and encode projected rings with attribute indices. */
 export function decodeVillageGeometry(
   topology: Topology,
   sourceAttributes: readonly VillageGeometryAttribute[],
 ): VillageGeometryData {
   const features = decodeTopology(topology, 'north-north-simplified') as unknown as VillageTopologyFeature[];
-  const villages = sourceAttributes.map(copyAndValidateAttribute).sort((a, b) => compareCode(a.VILLCODE, b.VILLCODE));
-  for (let index = 1; index < villages.length; index += 1) {
-    if (villages[index - 1]!.VILLCODE === villages[index]!.VILLCODE) {
-      throw new Error(`Village attributes contain a duplicate VILLCODE: ${villages[index]!.VILLCODE}`);
+  const sourceVillages = sourceAttributes.map(copyAndValidateAttribute).sort((a, b) => compareCode(a.VILLCODE, b.VILLCODE));
+  for (let index = 1; index < sourceVillages.length; index += 1) {
+    if (sourceVillages[index - 1]!.VILLCODE === sourceVillages[index]!.VILLCODE) {
+      throw new Error(`Village attributes contain a duplicate VILLCODE: ${sourceVillages[index]!.VILLCODE}`);
     }
   }
 
@@ -79,8 +115,8 @@ export function decodeVillageGeometry(
     }
     featuresByCode.set(code, feature);
   }
-  if (featuresByCode.size !== villages.length) {
-    throw new Error(`Village topology and attribute counts do not match (${featuresByCode.size} and ${villages.length}).`);
+  if (featuresByCode.size !== sourceVillages.length) {
+    throw new Error(`Village topology and attribute counts do not match (${featuresByCode.size} and ${sourceVillages.length}).`);
   }
 
   const coords: number[] = [];
@@ -88,12 +124,22 @@ export function decodeVillageGeometry(
   const ringVillageIndices: number[] = [];
   const ringPolygonIndices: number[] = [];
   const ringIsHole: number[] = [];
+  const villages: VillageGeometryRecord[] = [];
   let polygonIndex = 0;
 
-  for (let villageIndex = 0; villageIndex < villages.length; villageIndex += 1) {
-    const village = villages[villageIndex]!;
+  for (let villageIndex = 0; villageIndex < sourceVillages.length; villageIndex += 1) {
+    const village = sourceVillages[villageIndex]!;
     const feature = featuresByCode.get(village.VILLCODE);
     if (!feature) throw new Error(`Village topology is missing ${village.VILLCODE}.`);
+    const areaKm2 = multiPolygonAreaKm2(feature.geometry.coordinates);
+    if (!Number.isFinite(areaKm2) || areaKm2 <= 0) {
+      throw new Error(`Village ${village.VILLCODE} has no measurable polygon area.`);
+    }
+    villages.push({
+      ...village,
+      areaKm2,
+      densityPerKm2: village.populationMatched ? populationDensity(village.population, areaKm2) : null,
+    });
 
     for (const polygon of feature.geometry.coordinates) {
       if (polygon.length === 0) throw new Error(`Village ${village.VILLCODE} contains a polygon without rings.`);

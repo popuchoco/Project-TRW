@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { project } from '../../src/map/projection';
-import { decodeVillageGeometry, VILLAGE_GEOMETRY_VERSION, VILLAGE_PROJECTION_VERSION } from '../../src/map/village-geometry';
+import {
+  decodeVillageGeometry,
+  multiPolygonAreaKm2,
+  VILLAGE_GEOMETRY_VERSION,
+  VILLAGE_PROJECTION_VERSION,
+} from '../../src/map/village-geometry';
 import type { VillageGeometryAttribute } from '../../src/map/village-geometry';
 import type { Topology } from '../../src/map/types';
 
@@ -84,5 +89,18 @@ describe('decodeVillageGeometry', () => {
     expect(result.ringVillageIndices[holeRing]).toBe(1);
     expect(result.ringPolygonIndices[holeRing]).toBe(1);
     expect(result.ringOffsets[holeRing + 1]! - result.ringOffsets[holeRing]!).toBe(hole.length);
+    const village = result.villages.find(({ VILLCODE }) => VILLCODE === 'B')!;
+    expect(village.areaKm2).toBeGreaterThan(0);
+    expect(village.densityPerKm2).toBeCloseTo(village.population / village.areaKm2, 10);
+  });
+
+  it('calculates spherical polygon area in km² and subtracts holes', () => {
+    const fullArea = multiPolygonAreaKm2([[square]]);
+    const holedArea = multiPolygonAreaKm2([[square, hole]]);
+
+    expect(fullArea).toBeGreaterThan(10_000);
+    expect(holedArea).toBeGreaterThan(0);
+    expect(holedArea).toBeLessThan(fullArea);
+    expect(multiPolygonAreaKm2([[square], [island]])).toBeGreaterThan(fullArea);
   });
 });

@@ -192,6 +192,51 @@ body {
   white-space: nowrap;
 }
 
+.density-legend {
+  position: absolute;
+  z-index: 2;
+  right: 14px;
+  bottom: 72px;
+  min-width: 156px;
+  padding: 10px 12px;
+  border: 1px solid rgb(63 91 103 / 20%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 94%);
+  color: #344149;
+  box-shadow: 0 2px 12px rgb(31 47 56 / 10%);
+  font-size: 11px;
+}
+
+.density-legend-title {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.density-legend-list {
+  display: grid;
+  gap: 4px;
+}
+
+.density-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.2;
+}
+
+.density-legend-swatch {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  border: 1px solid rgb(46 70 72 / 22%);
+  border-radius: 3px;
+}
+
+.density-legend-unmatched {
+  background: #9da5a2;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -234,5 +279,13 @@ body {
 
   .town-info-text {
     font-size: 12px;
+  }
+
+  .density-legend {
+    right: 8px;
+    bottom: 60px;
+    min-width: 138px;
+    padding: 8px 9px;
+    font-size: 10px;
   }
 }

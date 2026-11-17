@@ -5,6 +5,13 @@ import { chooseLod, type LodId } from '../map/lod';
 import { QuadTree } from '../map/quadtree';
 import { project, projectBBox, unproject, type PlanePoint } from '../map/projection';
 import type { BBox, DataManifest, GeoFeature, TownProperties } from '../map/types';
+import {
+  buildDensityBreaks,
+  DENSITY_PALETTE,
+  densityClassIndex,
+  UNMATCHED_VILLAGE_COLOR,
+} from '../map/village-density';
+import type { VillageGeometryData, VillageGeometryRecord } from '../map/village-geometry';
 import { MapCamera, type ScreenPoint } from './camera';
 import { separatePolygonRings } from './polygon-rings';
 
@@ -26,6 +33,22 @@ interface PointerPosition extends ScreenPoint {
 interface PinchState {
   midpoint: ScreenPoint;
   distance: number;
+}
+
+interface VillageRingRef {
+  index: number;
+  isHole: boolean;
+}
+
+interface VillagePolygonRef {
+  rings: VillageRingRef[];
+  bbox: BBox;
+}
+
+interface VillageHitRecord {
+  villageIndex: number;
+  polygons: VillagePolygonRef[];
+  bbox: BBox;
 }
 
 const LOD_RANK: Record<LodId, number> = { lod0: 0, lod1: 1, lod2: 2, lod3: 3 };
@@ -68,11 +91,33 @@ function colorForFeature(feature: GeoFeature<TownProperties>): number {
   return townColor(feature.properties.TOWNCODE);
 }
 
+function pointInRing(
+  geometry: VillageGeometryData,
+  ringIndex: number,
+  x: number,
+  y: number,
+): boolean {
+  const start = geometry.ringOffsets[ringIndex]!;
+  const end = geometry.ringOffsets[ringIndex + 1]!;
+  let inside = false;
+  for (let index = start, previous = end - 1; index < end; previous = index, index += 1) {
+    const x1 = geometry.coords[previous * 2]!;
+    const y1 = geometry.coords[previous * 2 + 1]!;
+    const x2 = geometry.coords[index * 2]!;
+    const y2 = geometry.coords[index * 2 + 1]!;
+    const cross = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1);
+    const dot = (x - x1) * (x - x2) + (y - y1) * (y - y2);
+    if (Math.abs(cross) <= 1e-10 && dot <= 1e-10) return true;
+    if ((y1 > y) !== (y2 > y) && x < ((x2 - x1) * (y - y1)) / (y2 - y1) + x1) inside = !inside;
+  }
+  return inside;
+}
+
 /** Builds static Pixi display objects; camera changes only transform and cull them. */
 export class MapRenderer {
-  // TODO(S7): load and draw village layers from VillageGeometryClient; S6a supplies their worker-backed geometry buffers.
   readonly camera: MapCamera;
   private readonly mapRoot = new Container();
+  private readonly villagesRoot = new Container();
   private readonly selectionRoot = new Container();
   private readonly screenRoot = new Container();
   private readonly labelsRoot = new Container();
@@ -94,8 +139,14 @@ export class MapRenderer {
   private readonly labelByCounty = new Map<string, Text>();
   private readonly townBounds: QuadTree<DataManifest['towns'][number]>;
   private readonly insetFeatures: TownFeature[];
+  private readonly northNorthBounds: BBox;
   private insetLayouts = new Map<InsetId, InsetLayout>();
   private selectedCode?: string;
+  private villageGeometry?: VillageGeometryData;
+  private villageDensityBreaks: number[] = [];
+  private villageIndex?: QuadTree<VillageHitRecord>;
+  private metroViewActive = false;
+  private islandViewBeforeMetro?: { x: number; y: number; zoom: number };
   private desiredLod: LodId = 'lod0';
   private visibleCountyCodes: string[] = [];
   private readonly activePointers = new Map<number, PointerPosition>();
@@ -112,11 +163,15 @@ export class MapRenderer {
     insetFeatures: TownFeature[],
     private readonly onSelect: (feature: TownFeature) => void,
     private readonly onViewChange: (lod: LodId, visibleCounties: string[], zoom: number) => void,
+    private readonly onVillageSelect: (village: VillageGeometryRecord | undefined) => void,
+    private readonly onMetroViewChange: (active: boolean) => void,
   ) {
     this.insetFeatures = insetFeatures;
     this.camera = new MapCamera(app.screen.width, app.screen.height, this.mainBounds());
+    this.northNorthBounds = this.boundsForNorthNorth();
     this.townBounds = new QuadTree(manifest.towns, (town) => town.bbox);
-    this.app.stage.addChild(this.mapRoot, this.selectionRoot, this.screenRoot);
+    this.villagesRoot.visible = false;
+    this.app.stage.addChild(this.mapRoot, this.villagesRoot, this.selectionRoot, this.screenRoot);
     this.screenRoot.addChild(this.labelsRoot, this.simulationRoot, this.insetsRoot);
     this.simulationRoot.addChild(this.simulationMarker);
     this.setLodFeatures('lod0', initialFeatures);
@@ -135,6 +190,10 @@ export class MapRenderer {
 
   get zoom(): number {
     return this.camera.zoom;
+  }
+
+  get isMetroView(): boolean {
+    return this.metroViewActive;
   }
 
   setLodFeatures(lod: Exclude<LodId, 'lod3'>, features: TownFeature[]): void {
@@ -188,9 +247,52 @@ export class MapRenderer {
     this.updateCameraDisplay();
   }
 
+  enterMetroView(): void {
+    if (this.metroViewActive) return;
+    this.islandViewBeforeMetro = {
+      x: this.camera.center.x,
+      y: this.camera.center.y,
+      zoom: this.camera.zoom,
+    };
+    this.metroViewActive = true;
+    this.selectedCode = undefined;
+    this.rebuildSelection();
+    this.focusNorthNorthBounds();
+    this.villagesRoot.visible = Boolean(this.villageGeometry);
+    this.onMetroViewChange(true);
+  }
+
+  returnToIslandView(): void {
+    if (!this.metroViewActive) return;
+    this.metroViewActive = false;
+    this.villagesRoot.visible = false;
+    const islandView = this.islandViewBeforeMetro;
+    this.islandViewBeforeMetro = undefined;
+    if (islandView) this.camera.setView(islandView.x, islandView.y, islandView.zoom);
+    else this.camera.fit();
+    this.onVillageSelect(undefined);
+    this.onMetroViewChange(false);
+    this.updateCameraDisplay();
+  }
+
+  /** Install worker-decoded North–North geometry and return the six-class breaks. */
+  setVillageGeometry(geometry: VillageGeometryData): number[] {
+    this.villageGeometry = geometry;
+    const densities = geometry.villages
+      .filter((village) => village.populationMatched)
+      .map((village) => village.densityPerKm2!);
+    this.villageDensityBreaks = buildDensityBreaks(densities);
+    this.buildVillageLayer(geometry);
+    this.villagesRoot.visible = this.metroViewActive;
+    this.requestRender();
+    return [...this.villageDensityBreaks];
+  }
+
   setSimulationMarker(lon: number, lat: number): void {
+    if (this.simulationPosition?.[0] === lon && this.simulationPosition[1] === lat) return;
     this.simulationPosition = [lon, lat];
     this.positionSimulationMarker();
+    this.requestRender();
   }
 
   hitTown(lon: number, lat: number): TownFeature | undefined {
@@ -217,6 +319,122 @@ export class MapRenderer {
       ],
       [...towns[0]!.bbox],
     );
+  }
+
+  private boundsForNorthNorth(): BBox {
+    const towns = this.manifest.towns.filter((town) => town.countyCode === '63000' || town.countyCode === '65000');
+    if (towns.length === 0) return this.mainBounds();
+    return towns.reduce<BBox>(
+      (bounds, town) => [
+        Math.min(bounds[0], town.bbox[0]),
+        Math.min(bounds[1], town.bbox[1]),
+        Math.max(bounds[2], town.bbox[2]),
+        Math.max(bounds[3], town.bbox[3]),
+      ],
+      [...towns[0]!.bbox],
+    );
+  }
+
+  private focusNorthNorthBounds(): void {
+    const [minX, minY, maxX, maxY] = projectBBox(this.northNorthBounds);
+    const fitScale = Math.min(
+      (this.camera.width * 0.92) / (maxX - minX),
+      (this.camera.height * 0.88) / (maxY - minY),
+    );
+    this.camera.setView((minX + maxX) / 2, (minY + maxY) / 2, fitScale / this.camera.fitScale);
+    this.updateCameraDisplay();
+  }
+
+  private buildVillageLayer(geometry: VillageGeometryData): void {
+    this.villagesRoot.removeChildren().forEach((child) => child.destroy());
+    const polygonGroups = geometry.villages.map(() => new Map<number, number[]>());
+    for (let ringIndex = 0; ringIndex < geometry.ringVillageIndices.length; ringIndex += 1) {
+      const villageIndex = geometry.ringVillageIndices[ringIndex]!;
+      const polygonIndex = geometry.ringPolygonIndices[ringIndex]!;
+      const rings = polygonGroups[villageIndex]?.get(polygonIndex) ?? [];
+      rings.push(ringIndex);
+      polygonGroups[villageIndex]?.set(polygonIndex, rings);
+    }
+
+    const records = polygonGroups.map((group, villageIndex): VillageHitRecord => {
+      const polygons = [...group.values()].map((ringIndexes): VillagePolygonRef => {
+        const rings = ringIndexes.map((index) => ({ index, isHole: geometry.ringIsHole[index] === 1 }));
+        const bbox: BBox = [Infinity, Infinity, -Infinity, -Infinity];
+        for (const { index } of rings) {
+          const start = geometry.ringOffsets[index]!;
+          const end = geometry.ringOffsets[index + 1]!;
+          for (let pointIndex = start; pointIndex < end; pointIndex += 1) {
+            const x = geometry.coords[pointIndex * 2]!;
+            const y = geometry.coords[pointIndex * 2 + 1]!;
+            bbox[0] = Math.min(bbox[0], x);
+            bbox[1] = Math.min(bbox[1], y);
+            bbox[2] = Math.max(bbox[2], x);
+            bbox[3] = Math.max(bbox[3], y);
+          }
+        }
+        return { rings, bbox };
+      });
+      const bbox: BBox = [Infinity, Infinity, -Infinity, -Infinity];
+      for (const polygon of polygons) {
+        bbox[0] = Math.min(bbox[0], polygon.bbox[0]);
+        bbox[1] = Math.min(bbox[1], polygon.bbox[1]);
+        bbox[2] = Math.max(bbox[2], polygon.bbox[2]);
+        bbox[3] = Math.max(bbox[3], polygon.bbox[3]);
+      }
+      return { villageIndex, polygons, bbox };
+    });
+    this.villageIndex = new QuadTree(records, (record) => record.bbox);
+
+    const graphics = new Graphics();
+    for (const record of records) {
+      const village = geometry.villages[record.villageIndex]!;
+      const color = village.populationMatched
+        ? DENSITY_PALETTE[densityClassIndex(village.densityPerKm2!, this.villageDensityBreaks)]!
+        : UNMATCHED_VILLAGE_COLOR;
+      for (const polygon of record.polygons) {
+        const outer = polygon.rings.find((ring) => !ring.isHole);
+        if (!outer) continue;
+        const outerPoints = this.villageRingPoints(geometry, outer.index);
+        graphics.poly(outerPoints).fill(color);
+        const holes = polygon.rings.filter((ring) => ring.isHole);
+        if (holes.length > 0) {
+          for (const hole of holes) graphics.poly(this.villageRingPoints(geometry, hole.index));
+          graphics.cut();
+        }
+        graphics.poly(outerPoints).stroke({ color: 0xb7c3bd, width: 0.34, pixelLine: true });
+        for (const hole of holes) {
+          graphics.poly(this.villageRingPoints(geometry, hole.index)).stroke({ color: 0xb7c3bd, width: 0.34, pixelLine: true });
+        }
+      }
+    }
+    this.villagesRoot.addChild(graphics);
+  }
+
+  private villageRingPoints(geometry: VillageGeometryData, ringIndex: number): number[] {
+    const start = geometry.ringOffsets[ringIndex]! * 2;
+    const end = geometry.ringOffsets[ringIndex + 1]! * 2;
+    return Array.from(geometry.coords.subarray(start, end));
+  }
+
+  private hitVillage(x: number, y: number): VillageGeometryRecord | undefined {
+    const geometry = this.villageGeometry;
+    const index = this.villageIndex;
+    if (!geometry || !index) return undefined;
+    for (const record of index.queryPoint(x, y)) {
+      const inside = record.polygons.some((polygon) => {
+        let polygonContainsPoint = false;
+        for (const ring of polygon.rings) {
+          if (pointInRing(geometry, ring.index, x, y)) polygonContainsPoint = !polygonContainsPoint;
+        }
+        return polygonContainsPoint;
+      });
+      if (inside) return geometry.villages[record.villageIndex];
+    }
+    return undefined;
+  }
+
+  requestRender(): void {
+    this.app.renderer.render(this.app.stage);
   }
 
   private drawTownGroup(features: TownFeature[]): Container {
@@ -246,6 +464,8 @@ export class MapRenderer {
     const transform = this.camera.rootTransform();
     this.mapRoot.position.set(transform.x, transform.y);
     this.mapRoot.scale.set(this.camera.scale);
+    this.villagesRoot.position.set(transform.x, transform.y);
+    this.villagesRoot.scale.set(this.camera.scale);
     this.selectionRoot.position.set(transform.x, transform.y);
     this.selectionRoot.scale.set(this.camera.scale);
 
@@ -257,7 +477,9 @@ export class MapRenderer {
     this.refreshVisibility();
     this.positionCountyLabels();
     this.positionSimulationMarker();
+    this.insetsRoot.visible = !this.metroViewActive;
     this.onViewChange(this.desiredLod, this.visibleCountyCodes, this.camera.zoom);
+    this.requestRender();
   }
 
   private positionSimulationMarker(): void {
@@ -267,6 +489,7 @@ export class MapRenderer {
   }
 
   private refreshVisibility(): void {
+    this.mapRoot.alpha = this.metroViewActive ? 0.3 : 1;
     const visible = new Set(this.visibleCountyCodes);
     for (const countyLayers of this.layers.values()) {
       for (const container of countyLayers.values()) container.visible = false;
@@ -310,7 +533,7 @@ export class MapRenderer {
       const [minLon, minLat, maxLon, maxLat] = county.bbox;
       const position = this.camera.lonLatToScreen([(minLon + maxLon) / 2, (minLat + maxLat) / 2]);
       label.position.set(position.x, position.y);
-      label.visible = position.x >= -40 && position.x <= this.camera.width + 40 &&
+      label.visible = !this.metroViewActive && position.x >= -40 && position.x <= this.camera.width + 40 &&
         position.y >= -24 && position.y <= this.camera.height + 24;
     }
   }
@@ -526,32 +749,48 @@ export class MapRenderer {
   }
 
   private handleTap(point: ScreenPoint): void {
-    for (const layout of this.insetLayouts.values()) {
-      const { box } = layout;
-      if (point.x < box.x || point.x > box.x + box.width || point.y < box.y || point.y > box.y + box.height) continue;
-      const plane = {
-        x: layout.worldCenter.x + (point.x - layout.offset.x) / layout.scale,
-        y: layout.worldCenter.y + (point.y - layout.offset.y) / layout.scale,
-      };
-      const [lon, lat] = unproject(plane);
-      const insetFeature = lookupInset(this.insetFeatures, layout.id, lon, lat);
-      if (insetFeature) this.select(insetFeature);
+    if (!this.metroViewActive) {
+      for (const layout of this.insetLayouts.values()) {
+        const { box } = layout;
+        if (point.x < box.x || point.x > box.x + box.width || point.y < box.y || point.y > box.y + box.height) continue;
+        const plane = {
+          x: layout.worldCenter.x + (point.x - layout.offset.x) / layout.scale,
+          y: layout.worldCenter.y + (point.y - layout.offset.y) / layout.scale,
+        };
+        const [lon, lat] = unproject(plane);
+        const insetFeature = lookupInset(this.insetFeatures, layout.id, lon, lat);
+        if (insetFeature) this.select(insetFeature);
+        return;
+      }
+    }
+    if (this.metroViewActive) {
+      const worldPoint = this.camera.screenToWorld(point);
+      this.onVillageSelect(this.hitVillage(worldPoint.x, worldPoint.y));
       return;
     }
     const [lon, lat] = this.camera.screenToLonLat(point);
     const feature = this.hitTown(lon, lat);
-    if (feature) this.select(feature);
+    if (feature && (feature.properties.COUNTYCODE === '63000' || feature.properties.COUNTYCODE === '65000')) {
+      this.enterMetroView();
+    } else if (feature) {
+      this.select(feature);
+    }
   }
 
   private select(feature: TownFeature): void {
     this.selectedCode = feature.properties.TOWNCODE;
     this.rebuildSelection();
     this.onSelect(feature);
+    this.requestRender();
   }
 
   private handleResize(): void {
     this.camera.resize(this.app.screen.width, this.app.screen.height);
     this.rebuildInsets();
+    if (this.metroViewActive) {
+      this.focusNorthNorthBounds();
+      return;
+    }
     this.updateCameraDisplay();
   }
 }
