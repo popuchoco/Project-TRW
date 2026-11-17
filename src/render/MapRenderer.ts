@@ -70,6 +70,7 @@ function colorForFeature(feature: GeoFeature<TownProperties>): number {
 
 /** Builds static Pixi display objects; camera changes only transform and cull them. */
 export class MapRenderer {
+  // TODO(S7): load and draw village layers from VillageGeometryClient; S6a supplies their worker-backed geometry buffers.
   readonly camera: MapCamera;
   private readonly mapRoot = new Container();
   private readonly selectionRoot = new Container();
