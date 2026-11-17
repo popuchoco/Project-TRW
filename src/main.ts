@@ -76,6 +76,7 @@ interface TrwAutomationDebug {
   };
   buildTestLine(points: readonly (readonly [number, number])[], mode?: TransitModeId): string;
   setTrainCounts(lineId: string, peakTrains: number, offPeakTrains: number): void;
+  selectStation(stationId: string | undefined): void;
 }
 
 declare global {
@@ -1039,6 +1040,12 @@ async function startApp(): Promise<void> {
     },
     setTrainCounts: (lineId, peakTrains, offPeakTrains) => {
       executeNetworkCommand(setLineTrains(lineId, peakTrains, offPeakTrains), { type: 'line', id: lineId });
+    },
+    selectStation: (stationId) => {
+      if (stationId !== undefined && !networkHistory.network.stations.some(({ id }) => id === stationId)) {
+        throw new RangeError(`Unknown station id: ${stationId}`);
+      }
+      selectNetworkItem(stationId === undefined ? undefined : { type: 'station', id: stationId });
     },
   };
   ui.simSpeedSelect.value = String(selectedSimSpeed);
