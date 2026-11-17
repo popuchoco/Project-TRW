@@ -10,6 +10,11 @@ import { MAX_NAME_LENGTH } from '../city/limits';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
 import type { TransitSummarySnapshot } from '../sim/transit';
 import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
+import {
+  createSectionFlowChart,
+  type SectionFlowByPeriod,
+  type SectionFlowChartRenderer,
+} from './section-flow-chart';
 
 const numberFormat = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
 const moneyFormat = new Intl.NumberFormat('zh-TW', {
@@ -85,6 +90,7 @@ interface LineCard {
   carsOutput?: HTMLElement;
   totalCost: HTMLElement;
   qualityPanel: QualityPanelRenderer;
+  sectionFlowChart: SectionFlowChartRenderer;
   periodRows: Map<SimulationPeriodId, PeriodRow>;
 }
 
@@ -131,6 +137,8 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
   card.append(facts);
   const qualityPanel = createQualityPanel();
   card.append(qualityPanel.element);
+  const sectionFlowChart = createSectionFlowChart();
+  card.append(sectionFlowChart.element);
 
   const controls = element('div', 'line-card-controls');
   const peakInput = element('input', 'panel-range');
@@ -209,6 +217,7 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
     carsOutput,
     totalCost,
     qualityPanel,
+    sectionFlowChart,
     periodRows,
   };
 }
@@ -264,6 +273,10 @@ function updateLineCard(card: LineCard, line: Line, network: Network, snapshot: 
     ? totalOperatingCost
     : 0)}`;
   card.qualityPanel.update(lineStats?.quality ?? null, lineStats?.quality?.metrics ?? null);
+  // S10's line snapshot adds sectionFlowByPeriod; keep the UI optional until that data is present.
+  const sectionFlow = (lineStats as { sectionFlowByPeriod?: SectionFlowByPeriod } | undefined)?.sectionFlowByPeriod;
+  const stationNames = line.stationIds.map((stationId) => network.stations.find(({ id }) => id === stationId)?.name ?? stationId);
+  card.sectionFlowChart.update(sectionFlow, stationNames);
 }
 
 export function createSimulationPanels(container: HTMLElement, callbacks: PanelCallbacks): SimulationPanels {

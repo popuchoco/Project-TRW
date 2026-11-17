@@ -384,6 +384,115 @@ body {
   line-height: 1.3;
 }
 
+.section-flow-chart {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid #e5e9e9;
+}
+
+.section-flow-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.section-flow-chart-title {
+  margin: 0;
+  color: #344149;
+  font-size: 11px;
+}
+
+.section-flow-period-select {
+  min-height: 26px;
+  margin-top: 5px;
+  padding: 2px 5px;
+  border: 1px solid #d4dadd;
+  border-radius: 5px;
+  background: #fff;
+  color: #344149;
+  font: inherit;
+  font-size: 10px;
+}
+
+.section-flow-maximum {
+  min-height: 12px;
+  margin: 4px 0 0;
+  color: #5d6a70;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.section-flow-empty {
+  margin: 5px 0;
+  color: #69767d;
+  font-size: 10px;
+}
+
+.section-flow-graphic {
+  width: 100%;
+  overflow: hidden;
+}
+
+.section-flow-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.section-flow-direction {
+  fill: #69767d;
+  font-size: 9px;
+}
+
+.section-flow-baseline {
+  stroke: #dce3e3;
+  stroke-width: 1;
+}
+
+.section-flow-bar-light {
+  fill: #67a88b;
+}
+
+.section-flow-bar-busy {
+  fill: #d3a33d;
+}
+
+.section-flow-bar-nearCapacity {
+  fill: #d47b3f;
+}
+
+.section-flow-bar-overCapacity {
+  fill: #c84e52;
+}
+
+.section-flow-station-label {
+  fill: #59666d;
+  font-size: 8px;
+}
+
+.section-flow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  margin-top: 3px;
+  color: #69767d;
+  font-size: 8px;
+}
+
+.section-flow-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.section-flow-swatch {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+
 .line-card-controls {
   display: grid;
   grid-template-columns: 1fr 1fr;
