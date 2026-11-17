@@ -43,6 +43,17 @@ describe('network editing commands', () => {
     expect(generateStationName(network, 122, 25, villageAt)).toBe('新生里站');
   });
 
+  it('falls back to the town name for an unassigned village before applying duplicates', () => {
+    const unassigned: VillageAt = () => ({ name: '', townName: '石門區' });
+    let network = addStation(createEmptyNetwork(), 121.1);
+    const first = placeStation({ lon: 121.2, lat: 25, villageAt: unassigned });
+    network = apply(network, first);
+    const second = placeStation({ lon: 121.3, lat: 25, villageAt: unassigned });
+    network = apply(network, second);
+
+    expect(network.stations.map(({ name }) => name)).toEqual(['學府里站', '石門區站', '石門區站 (2)']);
+  });
+
   it('updates automatic names after moving and preserves manual names', () => {
     let network = addStation(createEmptyNetwork(), 121.1);
     const stationId = network.stations[0]!.id;

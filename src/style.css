@@ -55,6 +55,47 @@ body {
   backdrop-filter: blur(8px);
 }
 
+.network-editor-toolbar {
+  position: absolute;
+  z-index: 2;
+  top: 78px;
+  left: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  max-width: min(880px, calc(100vw - 28px));
+  padding: 8px;
+  border: 1px solid rgb(103 119 128 / 18%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 2px 12px rgb(31 47 56 / 8%);
+  backdrop-filter: blur(8px);
+}
+
+.editor-tool-button[aria-pressed="true"] {
+  border-color: #397d93;
+  background: #e6f2f4;
+  color: #174c5d;
+}
+
+.editor-selection {
+  padding-inline: 4px;
+  color: #536168;
+  font-size: 11px;
+}
+
+.spacing-hint {
+  flex-basis: 100%;
+  padding: 3px 5px 0;
+  color: #825a24;
+  font-size: 11px;
+}
+
+.editor-line-mode {
+  padding-inline: 3px;
+}
+
 .map-brand {
   display: grid;
   gap: 1px;
@@ -258,6 +299,20 @@ body {
     padding-inline: 6px;
   }
 
+  .network-editor-toolbar {
+    top: auto;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    max-width: none;
+    gap: 6px;
+    padding: 7px;
+  }
+
+  .editor-selection {
+    flex-basis: 100%;
+  }
+
   .map-status {
     top: 106px;
     left: 9px;
@@ -283,7 +338,7 @@ body {
 
   .density-legend {
     right: 8px;
-    bottom: 60px;
+    bottom: 190px;
     min-width: 138px;
     padding: 8px 9px;
     font-size: 10px;

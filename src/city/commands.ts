@@ -55,6 +55,17 @@ function command(type: string, apply: (network: Network) => Network): NetworkCom
   };
 }
 
+/** Combine related edits into one history step while preserving exact inverse state. */
+export function combineCommands(commands: readonly NetworkCommand[], type = 'combinedNetworkEdit'): NetworkCommand {
+  if (commands.length === 0) throw new RangeError('A combined command needs at least one edit.');
+  const edits = [...commands];
+  return {
+    type,
+    apply: (network) => edits.reduce((current, edit) => edit.apply(current), network),
+    inverse: (networkBefore) => snapshotCommand(networkBefore),
+  };
+}
+
 function requireStation(network: Network, stationId: string): Station {
   const station = network.stations.find((candidate) => candidate.id === stationId);
   if (!station) throw new RangeError(`Unknown station: ${stationId}`);
@@ -97,7 +108,9 @@ export function generateStationName(
   excludedStationId?: string,
 ): string {
   const village = villageAt(lon, lat);
-  const villageName = village ? `${village.name}站` : '未命名站';
+  const villageName = village
+    ? village.name.length > 0 ? `${village.name}站` : `${village.townName}站`
+    : '未命名站';
   const usedNames = new Set(
     network.stations
       .filter((station) => station.id !== excludedStationId)
@@ -105,7 +118,7 @@ export function generateStationName(
   );
   if (!usedNames.has(villageName)) return villageName;
 
-  if (village) {
+  if (village && village.name.length > 0) {
     const townQualifiedName = `${village.townName}${villageName}`;
     if (!usedNames.has(townQualifiedName)) return townQualifiedName;
     return uniqueName(townQualifiedName, network, excludedStationId);

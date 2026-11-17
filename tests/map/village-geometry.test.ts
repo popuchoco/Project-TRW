@@ -6,6 +6,7 @@ import {
   VILLAGE_GEOMETRY_VERSION,
   VILLAGE_PROJECTION_VERSION,
 } from '../../src/map/village-geometry';
+import { VillageGeometryLookup } from '../../src/map/village-lookup';
 import type { VillageGeometryAttribute } from '../../src/map/village-geometry';
 import type { Topology } from '../../src/map/types';
 
@@ -102,5 +103,15 @@ describe('decodeVillageGeometry', () => {
     expect(holedArea).toBeGreaterThan(0);
     expect(holedArea).toBeLessThan(fullArea);
     expect(multiPolygonAreaKm2([[square], [island]])).toBeGreaterThan(fullArea);
+  });
+
+  it('looks up villages from projected geometry buffers and respects polygon holes', () => {
+    const geometry = decodeVillageGeometry(topology, [attribute('A'), attribute('B')]);
+    const lookup = new VillageGeometryLookup(geometry);
+
+    expect(lookup.find(123.1, 25.1)?.VILLCODE).toBe('A');
+    expect(lookup.find(121.1, 25.1)?.VILLCODE).toBe('B');
+    expect(lookup.find(121.3, 25.3)).toBeUndefined();
+    expect(lookup.find(124, 25)).toBeUndefined();
   });
 });

@@ -4,7 +4,7 @@ import { VillageGeometryClient } from './map/geometry-client';
 import { scheduleOnceOnIdleOrTrigger, type LodId } from './map/lod';
 import { DENSITY_PALETTE } from './map/village-density';
 import type { VillageGeometryRecord } from './map/village-geometry';
-import { MapRenderer } from './render/MapRenderer';
+import { MapRenderer, type NetworkEditorPointer, type NetworkSelection } from './render/MapRenderer';
 import { importSaveFile, triggerSaveDownload } from './save/import-export';
 import { IndexedDbSaveStorage } from './save/storage';
 import { loadSave } from './save/save';
@@ -14,12 +14,27 @@ import type { SavePayloadV2 } from './save/types';
 import { registerServiceWorker } from './sw/register';
 import { SimClient } from './sim/client';
 import { createSim } from './sim/core';
-import { createEmptyNetwork } from './city/network';
+import {
+  combineCommands,
+  createLine,
+  deleteLine,
+  deleteStation,
+  extendLine,
+  insertStation,
+  moveStation,
+  placeStation,
+  type NetworkCommand,
+  type VillageAt,
+} from './city/commands';
+import { History } from './city/history';
+import { createEmptyNetwork, lineSpacingWarnings, type Network } from './city/network';
+import { TRANSIT_MODES, type TransitModeId } from './city/modes';
 import type { SimSpeed } from './sim/clock';
 import type { TownFeature } from './map/hit';
 import './style.css';
 
 type FpsSetting = 'auto' | 30 | 60;
+type EditorTool = 'select' | 'place' | 'line' | 'insert';
 
 interface TrwStats {
   fps: number;
@@ -54,6 +69,7 @@ let currentLodForStats: LodId | 'loading' = 'loading';
 let visibleCountyCount = 0;
 let firstMapMs: number | undefined;
 let simulationClient: SimClient | undefined;
+let transitClient: SimClient | undefined;
 let automaticPauseOnHide = false;
 let selectedSimSpeed: SimSpeed = 1;
 
@@ -88,6 +104,15 @@ function createUi(mount: HTMLElement): {
   simSpeedSelect: HTMLSelectElement;
   enterMetroButton: HTMLButtonElement;
   returnIslandButton: HTMLButtonElement;
+  editorToolbar: HTMLElement;
+  editorToolButtons: Map<EditorTool, HTMLButtonElement>;
+  lineModeSelect: HTMLSelectElement;
+  deleteStationButton: HTMLButtonElement;
+  deleteLineButton: HTMLButtonElement;
+  undoButton: HTMLButtonElement;
+  redoButton: HTMLButtonElement;
+  editorSelection: HTMLElement;
+  spacingHint: HTMLElement;
   densityLegend: HTMLElement;
   updateBanner: HTMLElement;
   updateButton: HTMLButtonElement;
@@ -159,6 +184,60 @@ function createUi(mount: HTMLElement): {
   toolbar.insertBefore(enterMetroButton, sources);
   toolbar.insertBefore(returnIslandButton, sources);
 
+  const editorToolbar = makeElement('section', 'network-editor-toolbar');
+  editorToolbar.hidden = true;
+  editorToolbar.setAttribute('aria-label', '路網編輯工具');
+  const editorToolButtons = new Map<EditorTool, HTMLButtonElement>();
+  for (const [tool, label] of [
+    ['select', '選取／移站'],
+    ['place', '放站'],
+    ['line', '拉線／延伸'],
+    ['insert', '插站'],
+  ] as const) {
+    const button = makeElement('button', 'source-button editor-tool-button', label);
+    button.type = 'button';
+    button.dataset.editorTool = tool;
+    button.setAttribute('aria-pressed', String(tool === 'select'));
+    editorToolButtons.set(tool, button);
+    editorToolbar.append(button);
+  }
+  const lineModeSetting = makeElement('label', 'fps-setting editor-line-mode');
+  lineModeSetting.append(makeElement('span', '', '新線運具'));
+  const lineModeSelect = makeElement('select', 'sim-speed-select');
+  lineModeSelect.setAttribute('aria-label', '新線運具');
+  for (const [value, label] of [['brt', TRANSIT_MODES.brt.name], ['metro', TRANSIT_MODES.metro.name]] as const) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    lineModeSelect.append(option);
+  }
+  lineModeSetting.append(lineModeSelect);
+  const deleteStationButton = makeElement('button', 'source-button', '刪除選取站');
+  deleteStationButton.type = 'button';
+  deleteStationButton.disabled = true;
+  const deleteLineButton = makeElement('button', 'source-button', '刪除選取線');
+  deleteLineButton.type = 'button';
+  deleteLineButton.disabled = true;
+  const undoButton = makeElement('button', 'source-button', '復原');
+  undoButton.type = 'button';
+  undoButton.disabled = true;
+  const redoButton = makeElement('button', 'source-button', '重做');
+  redoButton.type = 'button';
+  redoButton.disabled = true;
+  const editorSelection = makeElement('span', 'editor-selection', '尚未選取路網項目');
+  const spacingHint = makeElement('div', 'spacing-hint');
+  spacingHint.hidden = true;
+  spacingHint.setAttribute('role', 'status');
+  editorToolbar.append(
+    lineModeSetting,
+    deleteStationButton,
+    deleteLineButton,
+    undoButton,
+    redoButton,
+    editorSelection,
+    spacingHint,
+  );
+
   const status = makeElement('div', 'map-status', '載入地圖資料中…');
   status.setAttribute('role', 'status');
   const updateBanner = makeElement('section', 'update-banner');
@@ -178,7 +257,7 @@ function createUi(mount: HTMLElement): {
   densityLegend.hidden = true;
   densityLegend.setAttribute('aria-label', '村里人口密度圖例');
 
-  mount.append(toolbar, status, updateBanner, sourceDialog, infoCard, densityLegend);
+  mount.append(toolbar, editorToolbar, status, updateBanner, sourceDialog, infoCard, densityLegend);
   return {
     infoCard,
     infoText,
@@ -188,6 +267,15 @@ function createUi(mount: HTMLElement): {
     simSpeedSelect,
     enterMetroButton,
     returnIslandButton,
+    editorToolbar,
+    editorToolButtons,
+    lineModeSelect,
+    deleteStationButton,
+    deleteLineButton,
+    undoButton,
+    redoButton,
+    editorSelection,
+    spacingHint,
     densityLegend,
     updateBanner,
     updateButton,
@@ -262,17 +350,21 @@ async function startApp(): Promise<void> {
     console.info('Saved game could not be loaded; starting with a fresh session.', error);
   }
   if (restoredPayload) selectedSimSpeed = restoredPayload.simulation.speed;
-  const currentNetwork = restoredPayload?.network ?? createEmptyNetwork();
+  const networkHistory = new History(restoredPayload?.network ?? createEmptyNetwork());
+  const rendererState: { current?: MapRenderer } = {};
   const freshSimulation = createSim(0x545257);
+  let selectedNetworkItem: NetworkSelection;
+  let activeEditorTool: EditorTool = 'select';
+  let newLineMode: TransitModeId = 'brt';
   const saveStateProviders: SaveStateProviders = {
-    getNetwork: () => currentNetwork,
+    getNetwork: () => networkHistory.network,
     getCamera: () => {
       const camera = mapRenderer?.camera;
       return camera
         ? { x: camera.center.x, y: camera.center.y, zoom: camera.zoom }
         : restoredPayload?.camera ?? { x: 0, y: 0, zoom: 1 };
     },
-    getView: () => 'island',
+    getView: () => rendererState.current?.isMetroView ? 'metro' : 'island',
     getSimulation: () => simulationClient?.getSaveState() ?? restoredPayload?.simulation ?? {
       gameTimeMs: freshSimulation.gameTimeMs,
       speed: selectedSimSpeed,
@@ -288,6 +380,87 @@ async function startApp(): Promise<void> {
     ui.status.textContent = message;
     ui.status.hidden = false;
   };
+  const updateEditorControls = (): void => {
+    const network = networkHistory.network;
+    const station = selectedNetworkItem?.type === 'station'
+      ? network.stations.find(({ id }) => id === selectedNetworkItem?.id)
+      : undefined;
+    const line = selectedNetworkItem?.type === 'line'
+      ? network.lines.find(({ id }) => id === selectedNetworkItem?.id)
+      : undefined;
+    ui.editorSelection.textContent = station
+      ? `車站：${station.name}`
+      : line ? `路線：${line.name}` : '尚未選取路網項目';
+    ui.deleteStationButton.disabled = !station;
+    ui.deleteLineButton.disabled = !line;
+    ui.undoButton.disabled = !networkHistory.canUndo;
+    ui.redoButton.disabled = !networkHistory.canRedo;
+    for (const [tool, button] of ui.editorToolButtons) {
+      button.setAttribute('aria-pressed', String(tool === activeEditorTool));
+    }
+    const canvas = app?.canvas;
+    if (canvas) canvas.dataset.editorTool = activeEditorTool;
+  };
+  const updateSpacingHint = (network: Network): void => {
+    const warnings = network.lines.flatMap((line) => lineSpacingWarnings(line, network.stations));
+    ui.spacingHint.hidden = warnings.length === 0;
+    ui.spacingHint.textContent = warnings.length > 0
+      ? `站距提示：${warnings.length} 個路段超出建議範圍（只提示，不限制建線）。`
+      : '';
+  };
+  const syncNetwork = (network: Network): void => {
+    if (selectedNetworkItem?.type === 'station'
+      && !network.stations.some(({ id }) => id === selectedNetworkItem?.id)) selectedNetworkItem = undefined;
+    if (selectedNetworkItem?.type === 'line'
+      && !network.lines.some(({ id }) => id === selectedNetworkItem?.id)) selectedNetworkItem = undefined;
+    rendererState.current?.setNetwork(network);
+    rendererState.current?.setNetworkSelection(selectedNetworkItem);
+    transitClient?.setNetwork(network);
+    updateSpacingHint(network);
+    updateEditorControls();
+  };
+  const executeNetworkCommand = (command: NetworkCommand, selection?: NetworkSelection): Network => {
+    const network = networkHistory.execute(command);
+    if (selection !== undefined) selectedNetworkItem = selection;
+    syncNetwork(network);
+    return network;
+  };
+  const selectNetworkItem = (selection?: NetworkSelection): void => {
+    selectedNetworkItem = selection;
+    rendererState.current?.setNetworkSelection(selection);
+    updateEditorControls();
+  };
+  for (const [tool, button] of ui.editorToolButtons) {
+    button.addEventListener('click', () => {
+      activeEditorTool = tool;
+      updateEditorControls();
+    });
+  }
+  ui.lineModeSelect.addEventListener('change', () => {
+    newLineMode = ui.lineModeSelect.value === 'metro' ? 'metro' : 'brt';
+  });
+  ui.deleteStationButton.addEventListener('click', () => {
+    if (selectedNetworkItem?.type !== 'station') return;
+    executeNetworkCommand(deleteStation(selectedNetworkItem.id));
+  });
+  ui.deleteLineButton.addEventListener('click', () => {
+    if (selectedNetworkItem?.type !== 'line') return;
+    executeNetworkCommand(deleteLine(selectedNetworkItem.id));
+  });
+  ui.undoButton.addEventListener('click', () => syncNetwork(networkHistory.undo()));
+  ui.redoButton.addEventListener('click', () => syncNetwork(networkHistory.redo()));
+  document.addEventListener('keydown', (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+    if (event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      syncNetwork(event.shiftKey ? networkHistory.redo() : networkHistory.undo());
+    } else if (event.key.toLowerCase() === 'y') {
+      event.preventDefault();
+      syncNetwork(networkHistory.redo());
+    }
+  });
   const exportButton = mount.querySelector<HTMLButtonElement>('[data-action="export-save"]');
   const importButton = mount.querySelector<HTMLButtonElement>('[data-action="import-save"]');
   exportButton?.addEventListener('click', () => {
@@ -331,8 +504,13 @@ async function startApp(): Promise<void> {
   };
   ui.simPauseButton.addEventListener('click', () => {
     if (!simulationClient) return;
-    if (simulationClient.getStatus().paused) simulationClient.resume();
-    else simulationClient.pause();
+    if (simulationClient.getStatus().paused) {
+      simulationClient.resume();
+      transitClient?.resume();
+    } else {
+      simulationClient.pause();
+      transitClient?.pause();
+    }
     updateSimulationUi();
   });
   ui.simSpeedSelect.value = String(selectedSimSpeed);
@@ -341,6 +519,7 @@ async function startApp(): Promise<void> {
     if (value !== 1 && value !== 2 && value !== 4) return;
     selectedSimSpeed = value;
     simulationClient?.setSpeed(value);
+    transitClient?.setSpeed(value);
   });
 
   const pixiApp = new Application();
@@ -366,10 +545,12 @@ async function startApp(): Promise<void> {
     if (document.hidden && simulationClient && !simulationClient.getStatus().paused) {
       automaticPauseOnHide = true;
       simulationClient.pause();
+      transitClient?.pause();
       updateSimulationUi();
     } else if (!document.hidden && automaticPauseOnHide) {
       automaticPauseOnHide = false;
       simulationClient?.resume();
+      transitClient?.resume();
       updateSimulationUi();
     }
     if (document.hidden) {
@@ -380,7 +561,6 @@ async function startApp(): Promise<void> {
   });
 
   const loader = new MapDataLoader(import.meta.env.BASE_URL);
-  const rendererState: { current?: MapRenderer } = {};
   let villageGeometryClient: VillageGeometryClient | undefined;
   let villageGeometryPromise: Promise<void> | undefined;
   let hasVillageGeometry = false;
@@ -398,11 +578,14 @@ async function startApp(): Promise<void> {
       if (breaks) renderDensityLegend(ui.densityLegend, breaks);
       hasVillageGeometry = true;
       ui.densityLegend.hidden = !rendererState.current?.isMetroView;
+      ui.editorToolbar.hidden = !rendererState.current?.isMetroView;
+      updateEditorControls();
       ui.status.hidden = true;
     }).catch((error: unknown) => {
       console.error('Unable to load North–North village geometry', error);
       ui.status.textContent = '北北村里資料載入失敗，請返回全島後再試。';
       ui.status.hidden = false;
+      ui.editorToolbar.hidden = true;
       villageGeometryPromise = undefined;
     });
   };
@@ -498,6 +681,7 @@ async function startApp(): Promise<void> {
       ui.returnIslandButton.hidden = !active;
       ui.infoCard.hidden = true;
       ui.densityLegend.hidden = !active || !hasVillageGeometry;
+      ui.editorToolbar.hidden = !active || !hasVillageGeometry;
       if (active) ensureVillageGeometry();
       else if (ui.status.textContent === '載入北北村里資料中…') ui.status.hidden = true;
     },
@@ -506,6 +690,169 @@ async function startApp(): Promise<void> {
   mapRenderer = createdRenderer;
   ui.enterMetroButton.addEventListener('click', () => createdRenderer.enterMetroView());
   ui.returnIslandButton.addEventListener('click', () => createdRenderer.returnToIslandView());
+
+  type PendingEdit =
+    | { kind: 'place'; occupied: boolean; startScreen: NetworkEditorPointer['screen'] }
+    | { kind: 'move'; stationId: string; startScreen: NetworkEditorPointer['screen'] }
+    | { kind: 'line'; stationId: string; start: [number, number]; extend?: LineExtension }
+    | { kind: 'insert'; lineId: string; segmentIndex: number };
+  type LineExtension = { lineId: string; end: 'start' | 'end' };
+  let pendingEdit: PendingEdit | undefined;
+  const villageAt: VillageAt = (lon, lat) => createdRenderer.villageNameAt(lon, lat);
+  const endpointLineForStation = (stationId: string): { lineId: string; end: 'start' | 'end' } | undefined => {
+    const network = networkHistory.network;
+    const selectedLine = selectedNetworkItem?.type === 'line'
+      ? network.lines.find(({ id }) => id === selectedNetworkItem?.id)
+      : undefined;
+    const preferred = selectedLine ? [selectedLine, ...network.lines.filter(({ id }) => id !== selectedLine.id)] : network.lines;
+    for (const line of preferred) {
+      if (line.stationIds[0] === stationId) return { lineId: line.id, end: 'start' };
+      if (line.stationIds[line.stationIds.length - 1] === stationId) return { lineId: line.id, end: 'end' };
+    }
+    return undefined;
+  };
+  const stationCommandAt = (point: readonly [number, number]): NetworkCommand =>
+    placeStation({ lon: point[0], lat: point[1], villageAt });
+  const showPreviewStation = (point: readonly [number, number]): void => {
+    createdRenderer.setNetworkPreview(stationCommandAt(point).apply(networkHistory.network));
+  };
+  const clearEditPreview = (): void => {
+    pendingEdit = undefined;
+    createdRenderer.setNetworkPreview(undefined);
+    createdRenderer.setEditPreviewLine();
+  };
+  const insertAtPoint = (lineId: string, segmentIndex: number, point: readonly [number, number]): void => {
+    const network = networkHistory.network;
+    const stationId = `s${network.nextId}`;
+    const addStation = stationCommandAt(point);
+    const insert = insertStation(lineId, segmentIndex, { stationId });
+    executeNetworkCommand(combineCommands([addStation, insert], 'insertStationAtPoint'), { type: 'station', id: stationId });
+  };
+  const drawLineFromStation = (startStationId: string, pointer: NetworkEditorPointer, extension?: LineExtension): void => {
+    const network = networkHistory.network;
+    const targetStationId = pointer.hit?.type === 'station' ? pointer.hit.stationId : undefined;
+    if (targetStationId === startStationId) return;
+    if (extension) {
+      if (targetStationId) {
+        const line = network.lines.find(({ id }) => id === extension.lineId);
+        if (!line || line.stationIds.includes(targetStationId)) {
+          showStatus('不能把已在線上的車站再次延伸到同一路線。');
+          return;
+        }
+        executeNetworkCommand(extendLine(extension.lineId, extension.end, { stationId: targetStationId }), {
+          type: 'line', id: extension.lineId,
+        });
+        return;
+      }
+      const stationId = `s${network.nextId}`;
+      const addStation = stationCommandAt(pointer.lonLat);
+      const extend = extendLine(extension.lineId, extension.end, { stationId });
+      executeNetworkCommand(combineCommands([addStation, extend], 'extendLineToPoint'), {
+        type: 'line', id: extension.lineId,
+      });
+      return;
+    }
+    if (targetStationId) {
+      const lineId = `l${network.nextId}`;
+      executeNetworkCommand(createLine(startStationId, targetStationId, newLineMode), { type: 'line', id: lineId });
+      return;
+    }
+    const stationId = `s${network.nextId}`;
+    const lineId = `l${network.nextId + 1}`;
+    const addStation = stationCommandAt(pointer.lonLat);
+    const line = createLine(startStationId, stationId, newLineMode);
+    executeNetworkCommand(combineCommands([addStation, line], 'createLineToPoint'), { type: 'line', id: lineId });
+  };
+
+  createdRenderer.setEditorPointerHandler({
+    pointerDown(pointer) {
+      if (!hasVillageGeometry) return false;
+      if (activeEditorTool === 'place') {
+        pendingEdit = {
+          kind: 'place',
+          occupied: pointer.hit?.type === 'station',
+          startScreen: pointer.screen,
+        };
+        return true;
+      }
+      if (activeEditorTool === 'line' && pointer.hit?.type === 'station') {
+        const stationId = pointer.hit.stationId;
+        const station = networkHistory.network.stations.find(({ id }) => id === stationId);
+        if (!station) return false;
+        pendingEdit = {
+          kind: 'line',
+          stationId,
+          start: [station.lon, station.lat],
+          extend: endpointLineForStation(stationId),
+        };
+        selectNetworkItem({ type: 'station', id: stationId });
+        return true;
+      }
+      if (activeEditorTool === 'insert' && pointer.hit?.type === 'line') {
+        pendingEdit = { kind: 'insert', lineId: pointer.hit.lineId, segmentIndex: pointer.hit.segmentIndex };
+        selectNetworkItem({ type: 'line', id: pointer.hit.lineId });
+        return true;
+      }
+      if (activeEditorTool === 'select' && pointer.hit?.type === 'station') {
+        pendingEdit = { kind: 'move', stationId: pointer.hit.stationId, startScreen: pointer.screen };
+        selectNetworkItem({ type: 'station', id: pointer.hit.stationId });
+        return true;
+      }
+      if (activeEditorTool === 'select' && pointer.hit?.type === 'line') {
+        selectNetworkItem({ type: 'line', id: pointer.hit.lineId });
+        return true;
+      }
+      return false;
+    },
+    pointerMove(pointer) {
+      if (!pendingEdit) return;
+      if ('startScreen' in pendingEdit
+        && Math.hypot(pointer.screen.x - pendingEdit.startScreen.x, pointer.screen.y - pendingEdit.startScreen.y) <= 4) return;
+      if (pendingEdit.kind === 'place' && !pendingEdit.occupied) {
+        showPreviewStation(pointer.lonLat);
+      } else if (pendingEdit.kind === 'move') {
+        const preview = moveStation(pendingEdit.stationId, pointer.lonLat[0], pointer.lonLat[1], villageAt)
+          .apply(networkHistory.network);
+        createdRenderer.setNetworkPreview(preview);
+      } else if (pendingEdit.kind === 'line') {
+        createdRenderer.setEditPreviewLine(pendingEdit.start, pointer.lonLat);
+      } else if (pendingEdit.kind === 'insert') {
+        const network = networkHistory.network;
+        const stationId = `s${network.nextId}`;
+        const preview = combineCommands([
+          stationCommandAt(pointer.lonLat),
+          insertStation(pendingEdit.lineId, pendingEdit.segmentIndex, { stationId }),
+        ], 'previewInsertStation').apply(network);
+        createdRenderer.setNetworkPreview(preview);
+      }
+    },
+    pointerUp(pointer, dragged) {
+      const edit = pendingEdit;
+      clearEditPreview();
+      if (!edit) return;
+      if (edit.kind === 'place') {
+        if (!dragged && !edit.occupied) {
+          const stationId = `s${networkHistory.network.nextId}`;
+          executeNetworkCommand(stationCommandAt(pointer.lonLat), { type: 'station', id: stationId });
+        }
+      } else if (edit.kind === 'move' && dragged) {
+        executeNetworkCommand(moveStation(edit.stationId, pointer.lonLat[0], pointer.lonLat[1], villageAt), {
+          type: 'station', id: edit.stationId,
+        });
+      } else if (edit.kind === 'line' && dragged) {
+        drawLineFromStation(edit.stationId, pointer, edit.extend);
+      } else if (edit.kind === 'insert') {
+        insertAtPoint(edit.lineId, edit.segmentIndex, pointer.lonLat);
+      }
+    },
+    pointerCancel() {
+      clearEditPreview();
+    },
+  });
+
+  createdRenderer.setNetwork(networkHistory.network);
+  updateSpacingHint(networkHistory.network);
+  updateEditorControls();
   if (restoredPayload) {
     createdRenderer.setCameraView(restoredPayload.camera.x, restoredPayload.camera.y, restoredPayload.camera.zoom);
   }
@@ -524,14 +871,31 @@ async function startApp(): Promise<void> {
     speed: restoredSimulation?.speed ?? selectedSimSpeed,
     paused: restoredSimulation?.paused ?? false,
   });
+  transitClient = new SimClient(undefined, () => performance.now());
+  transitClient.subscribe((snapshot) => {
+    if ('trains' in snapshot) createdRenderer.setTrainPositions(snapshot.trains);
+  });
+  const dataBase = new URL(import.meta.env.BASE_URL, document.baseURI);
+  transitClient.startTransit(
+    restoredSimulation?.seed ?? 0x545257,
+    { kind: 'url', url: new URL('data/villages-6300065000.json', dataBase).href },
+    networkHistory.network,
+    undefined,
+    {
+      speed: restoredSimulation?.speed ?? selectedSimSpeed,
+      paused: restoredSimulation?.paused ?? false,
+    },
+  );
   ui.simSpeedSelect.value = String(selectedSimSpeed);
   if (document.hidden) {
     automaticPauseOnHide = true;
     simulationClient.pause();
+    transitClient.pause();
   }
   pixiApp.ticker.add(() => {
     const entity = simulationClient?.getInterpolatedEntities()[0];
     if (entity) createdRenderer.setSimulationMarker(entity.lon, entity.lat);
+    createdRenderer.setTrainPositions(transitClient?.getInterpolatedTrainPositions() ?? []);
   });
   updateSimulationUi();
   pixiApp.ticker.start();

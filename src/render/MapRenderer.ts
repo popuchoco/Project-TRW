@@ -12,8 +12,12 @@ import {
   UNMATCHED_VILLAGE_COLOR,
 } from '../map/village-density';
 import type { VillageGeometryData, VillageGeometryRecord } from '../map/village-geometry';
+import { VillageGeometryLookup } from '../map/village-lookup';
 import { MapCamera, type ScreenPoint } from './camera';
 import { separatePolygonRings } from './polygon-rings';
+import type { Network } from '../city/network';
+import { createEmptyNetwork } from '../city/network';
+import type { TrainPosition } from '../sim/protocol';
 
 type CountyLayers = Map<string, Container>;
 type InsetId = 'diaoyutai' | 'dongsha' | 'nansha';
@@ -35,21 +39,25 @@ interface PinchState {
   distance: number;
 }
 
-interface VillageRingRef {
-  index: number;
-  isHole: boolean;
+export type NetworkEditorHit =
+  | { type: 'station'; stationId: string }
+  | { type: 'line'; lineId: string; segmentIndex: number }
+  | undefined;
+
+export interface NetworkEditorPointer {
+  screen: ScreenPoint;
+  lonLat: [number, number];
+  hit: NetworkEditorHit;
 }
 
-interface VillagePolygonRef {
-  rings: VillageRingRef[];
-  bbox: BBox;
+export interface NetworkEditorPointerHandler {
+  pointerDown(pointer: NetworkEditorPointer): boolean;
+  pointerMove(pointer: NetworkEditorPointer): void;
+  pointerUp(pointer: NetworkEditorPointer, dragged: boolean): void;
+  pointerCancel(): void;
 }
 
-interface VillageHitRecord {
-  villageIndex: number;
-  polygons: VillagePolygonRef[];
-  bbox: BBox;
-}
+export type NetworkSelection = { type: 'station' | 'line'; id: string } | undefined;
 
 const LOD_RANK: Record<LodId, number> = { lod0: 0, lod1: 1, lod2: 2, lod3: 3 };
 const INSET_CAPTIONS: Record<InsetId, string> = {
@@ -91,26 +99,19 @@ function colorForFeature(feature: GeoFeature<TownProperties>): number {
   return townColor(feature.properties.TOWNCODE);
 }
 
-function pointInRing(
-  geometry: VillageGeometryData,
-  ringIndex: number,
-  x: number,
-  y: number,
-): boolean {
-  const start = geometry.ringOffsets[ringIndex]!;
-  const end = geometry.ringOffsets[ringIndex + 1]!;
-  let inside = false;
-  for (let index = start, previous = end - 1; index < end; previous = index, index += 1) {
-    const x1 = geometry.coords[previous * 2]!;
-    const y1 = geometry.coords[previous * 2 + 1]!;
-    const x2 = geometry.coords[index * 2]!;
-    const y2 = geometry.coords[index * 2 + 1]!;
-    const cross = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1);
-    const dot = (x - x1) * (x - x2) + (y - y1) * (y - y2);
-    if (Math.abs(cross) <= 1e-10 && dot <= 1e-10) return true;
-    if ((y1 > y) !== (y2 > y) && x < ((x2 - x1) * (y - y1)) / (y2 - y1) + x1) inside = !inside;
-  }
-  return inside;
+function colorFromHex(value: string, fallback = 0x3194d0): number {
+  if (!/^#[0-9a-fA-F]{6}$/.test(value)) return fallback;
+  return Number.parseInt(value.slice(1), 16);
+}
+
+function distanceToSegment(point: ScreenPoint, start: ScreenPoint, end: ScreenPoint): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const amount = lengthSquared === 0
+    ? 0
+    : Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+  return Math.hypot(point.x - (start.x + amount * dx), point.y - (start.y + amount * dy));
 }
 
 /** Builds static Pixi display objects; camera changes only transform and cull them. */
@@ -118,9 +119,14 @@ export class MapRenderer {
   readonly camera: MapCamera;
   private readonly mapRoot = new Container();
   private readonly villagesRoot = new Container();
+  private readonly networkRoot = new Container();
+  private readonly networkGraphics = new Graphics();
   private readonly selectionRoot = new Container();
   private readonly screenRoot = new Container();
   private readonly labelsRoot = new Container();
+  private readonly stationGraphics = new Graphics();
+  private readonly trainGraphics = new Graphics();
+  private readonly editPreviewGraphics = new Graphics();
   private readonly simulationRoot = new Container();
   private readonly insetsRoot = new Container();
   private readonly simulationMarker = new Graphics()
@@ -143,8 +149,14 @@ export class MapRenderer {
   private insetLayouts = new Map<InsetId, InsetLayout>();
   private selectedCode?: string;
   private villageGeometry?: VillageGeometryData;
+  private villageLookup?: VillageGeometryLookup;
   private villageDensityBreaks: number[] = [];
-  private villageIndex?: QuadTree<VillageHitRecord>;
+  private network: Network = createEmptyNetwork();
+  private networkPreview?: Network;
+  private selectedNetworkItem?: NetworkSelection;
+  private trainPositions: TrainPosition[] = [];
+  private editorPointerHandler?: NetworkEditorPointerHandler;
+  private editorPointerId?: number;
   private metroViewActive = false;
   private islandViewBeforeMetro?: { x: number; y: number; zoom: number };
   private desiredLod: LodId = 'lod0';
@@ -171,8 +183,19 @@ export class MapRenderer {
     this.northNorthBounds = this.boundsForNorthNorth();
     this.townBounds = new QuadTree(manifest.towns, (town) => town.bbox);
     this.villagesRoot.visible = false;
-    this.app.stage.addChild(this.mapRoot, this.villagesRoot, this.selectionRoot, this.screenRoot);
-    this.screenRoot.addChild(this.labelsRoot, this.simulationRoot, this.insetsRoot);
+    this.networkRoot.visible = false;
+    this.stationGraphics.visible = false;
+    this.trainGraphics.visible = false;
+    this.app.stage.addChild(this.mapRoot, this.villagesRoot, this.networkRoot, this.selectionRoot, this.screenRoot);
+    this.networkRoot.addChild(this.networkGraphics);
+    this.screenRoot.addChild(
+      this.labelsRoot,
+      this.stationGraphics,
+      this.trainGraphics,
+      this.editPreviewGraphics,
+      this.simulationRoot,
+      this.insetsRoot,
+    );
     this.simulationRoot.addChild(this.simulationMarker);
     this.setLodFeatures('lod0', initialFeatures);
     this.installPointerHandlers();
@@ -194,6 +217,89 @@ export class MapRenderer {
 
   get isMetroView(): boolean {
     return this.metroViewActive;
+  }
+
+  setNetwork(network: Network): void {
+    this.network = network;
+    this.networkPreview = undefined;
+    this.drawNetwork();
+    this.drawTrainMarkers();
+    this.requestRender();
+  }
+
+  setNetworkPreview(network?: Network): void {
+    this.networkPreview = network;
+    this.drawNetwork();
+    this.requestRender();
+  }
+
+  setNetworkSelection(selection: NetworkSelection): void {
+    this.selectedNetworkItem = selection;
+    this.drawNetwork();
+    this.requestRender();
+  }
+
+  setTrainPositions(trains: readonly TrainPosition[]): void {
+    this.trainPositions = trains.map((train) => ({ ...train }));
+    this.drawTrainMarkers();
+    this.requestRender();
+  }
+
+  setEditorPointerHandler(handler?: NetworkEditorPointerHandler): void {
+    this.editorPointerHandler = handler;
+    this.editorPointerId = undefined;
+    this.editPreviewGraphics.clear();
+    this.requestRender();
+  }
+
+  setEditPreviewLine(start?: [number, number], end?: [number, number]): void {
+    this.editPreviewGraphics.clear();
+    if (start && end) {
+      const first = this.camera.lonLatToScreen(start);
+      const second = this.camera.lonLatToScreen(end);
+      this.editPreviewGraphics
+        .moveTo(first.x, first.y)
+        .lineTo(second.x, second.y)
+        .stroke({ color: 0x153c54, alpha: 0.8, width: 2, pixelLine: true });
+    }
+    this.requestRender();
+  }
+
+  villageNameAt(lon: number, lat: number): { name: string; townName: string } | undefined {
+    const village = this.villageLookup?.find(lon, lat);
+    return village ? { name: village.name, townName: village.townName } : undefined;
+  }
+
+  hitTestNetwork(screen: ScreenPoint): NetworkEditorHit {
+    const network = this.networkPreview ?? this.network;
+    let nearestStation: { id: string; distance: number } | undefined;
+    for (const station of network.stations) {
+      const point = this.camera.lonLatToScreen([station.lon, station.lat]);
+      const distance = Math.hypot(point.x - screen.x, point.y - screen.y);
+      if (distance <= 12 && (!nearestStation || distance < nearestStation.distance)) {
+        nearestStation = { id: station.id, distance };
+      }
+    }
+    if (nearestStation) return { type: 'station', stationId: nearestStation.id };
+
+    let nearestLine: { lineId: string; segmentIndex: number; distance: number } | undefined;
+    const stationsById = new Map(network.stations.map((station) => [station.id, station]));
+    for (const line of network.lines) {
+      for (let segmentIndex = 0; segmentIndex + 1 < line.stationIds.length; segmentIndex += 1) {
+        const startStation = stationsById.get(line.stationIds[segmentIndex]!);
+        const endStation = stationsById.get(line.stationIds[segmentIndex + 1]!);
+        if (!startStation || !endStation) continue;
+        const start = this.camera.lonLatToScreen([startStation.lon, startStation.lat]);
+        const end = this.camera.lonLatToScreen([endStation.lon, endStation.lat]);
+        const distance = distanceToSegment(screen, start, end);
+        if (distance <= 9 && (!nearestLine || distance < nearestLine.distance)) {
+          nearestLine = { lineId: line.id, segmentIndex, distance };
+        }
+      }
+    }
+    return nearestLine
+      ? { type: 'line', lineId: nearestLine.lineId, segmentIndex: nearestLine.segmentIndex }
+      : undefined;
   }
 
   setLodFeatures(lod: Exclude<LodId, 'lod3'>, features: TownFeature[]): void {
@@ -255,6 +361,10 @@ export class MapRenderer {
       zoom: this.camera.zoom,
     };
     this.metroViewActive = true;
+    this.networkRoot.visible = true;
+    this.stationGraphics.visible = true;
+    this.trainGraphics.visible = true;
+    this.simulationRoot.visible = false;
     this.selectedCode = undefined;
     this.rebuildSelection();
     this.focusNorthNorthBounds();
@@ -266,6 +376,10 @@ export class MapRenderer {
     if (!this.metroViewActive) return;
     this.metroViewActive = false;
     this.villagesRoot.visible = false;
+    this.networkRoot.visible = false;
+    this.stationGraphics.visible = false;
+    this.trainGraphics.visible = false;
+    this.simulationRoot.visible = true;
     const islandView = this.islandViewBeforeMetro;
     this.islandViewBeforeMetro = undefined;
     if (islandView) this.camera.setView(islandView.x, islandView.y, islandView.zoom);
@@ -278,6 +392,7 @@ export class MapRenderer {
   /** Install worker-decoded North–North geometry and return the six-class breaks. */
   setVillageGeometry(geometry: VillageGeometryData): number[] {
     this.villageGeometry = geometry;
+    this.villageLookup = new VillageGeometryLookup(geometry);
     const densities = geometry.villages
       .filter((village) => village.populationMatched)
       .map((village) => village.densityPerKm2!);
@@ -356,54 +471,26 @@ export class MapRenderer {
       polygonGroups[villageIndex]?.set(polygonIndex, rings);
     }
 
-    const records = polygonGroups.map((group, villageIndex): VillageHitRecord => {
-      const polygons = [...group.values()].map((ringIndexes): VillagePolygonRef => {
-        const rings = ringIndexes.map((index) => ({ index, isHole: geometry.ringIsHole[index] === 1 }));
-        const bbox: BBox = [Infinity, Infinity, -Infinity, -Infinity];
-        for (const { index } of rings) {
-          const start = geometry.ringOffsets[index]!;
-          const end = geometry.ringOffsets[index + 1]!;
-          for (let pointIndex = start; pointIndex < end; pointIndex += 1) {
-            const x = geometry.coords[pointIndex * 2]!;
-            const y = geometry.coords[pointIndex * 2 + 1]!;
-            bbox[0] = Math.min(bbox[0], x);
-            bbox[1] = Math.min(bbox[1], y);
-            bbox[2] = Math.max(bbox[2], x);
-            bbox[3] = Math.max(bbox[3], y);
-          }
-        }
-        return { rings, bbox };
-      });
-      const bbox: BBox = [Infinity, Infinity, -Infinity, -Infinity];
-      for (const polygon of polygons) {
-        bbox[0] = Math.min(bbox[0], polygon.bbox[0]);
-        bbox[1] = Math.min(bbox[1], polygon.bbox[1]);
-        bbox[2] = Math.max(bbox[2], polygon.bbox[2]);
-        bbox[3] = Math.max(bbox[3], polygon.bbox[3]);
-      }
-      return { villageIndex, polygons, bbox };
-    });
-    this.villageIndex = new QuadTree(records, (record) => record.bbox);
-
     const graphics = new Graphics();
-    for (const record of records) {
-      const village = geometry.villages[record.villageIndex]!;
+    for (let villageIndex = 0; villageIndex < polygonGroups.length; villageIndex += 1) {
+      const group = polygonGroups[villageIndex]!;
+      const village = geometry.villages[villageIndex]!;
       const color = village.populationMatched
         ? DENSITY_PALETTE[densityClassIndex(village.densityPerKm2!, this.villageDensityBreaks)]!
         : UNMATCHED_VILLAGE_COLOR;
-      for (const polygon of record.polygons) {
-        const outer = polygon.rings.find((ring) => !ring.isHole);
-        if (!outer) continue;
-        const outerPoints = this.villageRingPoints(geometry, outer.index);
+      for (const ringIndexes of group.values()) {
+        const outerIndex = ringIndexes.find((ringIndex) => geometry.ringIsHole[ringIndex] === 0);
+        if (outerIndex === undefined) continue;
+        const outerPoints = this.villageRingPoints(geometry, outerIndex);
         graphics.poly(outerPoints).fill(color);
-        const holes = polygon.rings.filter((ring) => ring.isHole);
+        const holes = ringIndexes.filter((ringIndex) => geometry.ringIsHole[ringIndex] === 1);
         if (holes.length > 0) {
-          for (const hole of holes) graphics.poly(this.villageRingPoints(geometry, hole.index));
+          for (const holeIndex of holes) graphics.poly(this.villageRingPoints(geometry, holeIndex));
           graphics.cut();
         }
         graphics.poly(outerPoints).stroke({ color: 0xb7c3bd, width: 0.34, pixelLine: true });
-        for (const hole of holes) {
-          graphics.poly(this.villageRingPoints(geometry, hole.index)).stroke({ color: 0xb7c3bd, width: 0.34, pixelLine: true });
+        for (const holeIndex of holes) {
+          graphics.poly(this.villageRingPoints(geometry, holeIndex)).stroke({ color: 0xb7c3bd, width: 0.34, pixelLine: true });
         }
       }
     }
@@ -417,20 +504,61 @@ export class MapRenderer {
   }
 
   private hitVillage(x: number, y: number): VillageGeometryRecord | undefined {
-    const geometry = this.villageGeometry;
-    const index = this.villageIndex;
-    if (!geometry || !index) return undefined;
-    for (const record of index.queryPoint(x, y)) {
-      const inside = record.polygons.some((polygon) => {
-        let polygonContainsPoint = false;
-        for (const ring of polygon.rings) {
-          if (pointInRing(geometry, ring.index, x, y)) polygonContainsPoint = !polygonContainsPoint;
-        }
-        return polygonContainsPoint;
-      });
-      if (inside) return geometry.villages[record.villageIndex];
+    return this.villageLookup?.findProjected(x, y);
+  }
+
+  private drawNetwork(): void {
+    this.networkGraphics.clear();
+    const network = this.networkPreview ?? this.network;
+    const stationsById = new Map(network.stations.map((station) => [station.id, station]));
+    for (const line of network.lines) {
+      const color = colorFromHex(line.color);
+      const selected = this.selectedNetworkItem?.type === 'line' && this.selectedNetworkItem.id === line.id;
+      for (let index = 0; index + 1 < line.stationIds.length; index += 1) {
+        const first = stationsById.get(line.stationIds[index]!);
+        const second = stationsById.get(line.stationIds[index + 1]!);
+        if (!first || !second) continue;
+        const start = project([first.lon, first.lat]);
+        const end = project([second.lon, second.lat]);
+        this.networkGraphics
+          .moveTo(start.x, start.y)
+          .lineTo(end.x, end.y)
+          .stroke({ color, alpha: selected ? 1 : 0.88, width: selected ? 5 : 3.2, pixelLine: true });
+      }
     }
-    return undefined;
+    this.networkRoot.visible = this.metroViewActive;
+    this.drawStationMarkers();
+  }
+
+  private drawStationMarkers(): void {
+    this.stationGraphics.clear();
+    const network = this.networkPreview ?? this.network;
+    for (const station of network.stations) {
+      const point = this.camera.lonLatToScreen([station.lon, station.lat]);
+      const selected = this.selectedNetworkItem?.type === 'station' && this.selectedNetworkItem.id === station.id;
+      this.stationGraphics
+        .circle(point.x, point.y, selected ? 9 : 7)
+        .fill(0xffffff)
+        .circle(point.x, point.y, selected ? 6.2 : 4.8)
+        .fill(selected ? 0xd57435 : 0x215c72);
+    }
+    this.stationGraphics.visible = this.metroViewActive;
+  }
+
+  private drawTrainMarkers(): void {
+    this.trainGraphics.clear();
+    const linesById = new Map(this.network.lines.map((line) => [line.id, line]));
+    for (const train of this.trainPositions) {
+      const point = this.camera.lonLatToScreen([train.lon, train.lat]);
+      const line = linesById.get(train.lineId);
+      const color = line ? colorFromHex(line.color) : 0xd84637;
+      this.trainGraphics
+        .circle(point.x, point.y, 6)
+        .fill({ color: 0xffffff, alpha: 0.96 })
+        .circle(point.x, point.y, 3.6)
+        .fill(color);
+    }
+    this.trainGraphics.visible = this.metroViewActive;
   }
 
   requestRender(): void {
@@ -468,6 +596,8 @@ export class MapRenderer {
     this.villagesRoot.scale.set(this.camera.scale);
     this.selectionRoot.position.set(transform.x, transform.y);
     this.selectionRoot.scale.set(this.camera.scale);
+    this.networkRoot.position.set(transform.x, transform.y);
+    this.networkRoot.scale.set(this.camera.scale);
 
     this.desiredLod = chooseLod(this.camera.zoom);
     this.visibleCountyCodes = this.townBounds
@@ -476,6 +606,8 @@ export class MapRenderer {
       .filter((code, index, codes) => codes.indexOf(code) === index);
     this.refreshVisibility();
     this.positionCountyLabels();
+    this.drawStationMarkers();
+    this.drawTrainMarkers();
     this.positionSimulationMarker();
     this.insetsRoot.visible = !this.metroViewActive;
     this.onViewChange(this.desiredLod, this.visibleCountyCodes, this.camera.zoom);
@@ -675,7 +807,14 @@ export class MapRenderer {
       this.gestureMoved = false;
       this.gestureMultiPointer = false;
       this.pinchState = undefined;
+      if (this.metroViewActive && this.editorPointerHandler?.pointerDown(this.editorPointer(point))) {
+        this.editorPointerId = event.pointerId;
+      }
     } else {
+      if (this.editorPointerId !== undefined) {
+        this.editorPointerHandler?.pointerCancel();
+        this.editorPointerId = undefined;
+      }
       this.gestureMoved = true;
       this.gestureMultiPointer = true;
       this.pinchState = this.currentPinchState();
@@ -702,6 +841,10 @@ export class MapRenderer {
     if (this.gestureStart && Math.hypot(point.x - this.gestureStart.x, point.y - this.gestureStart.y) > 4) {
       this.gestureMoved = true;
     }
+    if (this.editorPointerId === event.pointerId) {
+      this.editorPointerHandler?.pointerMove(this.editorPointer(point));
+      return;
+    }
     const dx = point.x - previous.x;
     const dy = point.y - previous.y;
     if (dx !== 0 || dy !== 0) {
@@ -712,11 +855,17 @@ export class MapRenderer {
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
     const point = this.toScreen(event);
+    const wasEditorPointer = this.editorPointerId === event.pointerId;
+    const dragged = this.gestureMoved;
     const hadPointer = this.activePointers.delete(event.pointerId);
     if (!hadPointer) return;
+    if (wasEditorPointer) {
+      this.editorPointerHandler?.pointerUp(this.editorPointer(point), dragged);
+      this.editorPointerId = undefined;
+    }
     if (this.activePointers.size === 1) this.pinchState = undefined;
     if (this.activePointers.size === 0) {
-      if (!this.gestureMoved && !this.gestureMultiPointer) this.handleTap(point);
+      if (!wasEditorPointer && !this.gestureMoved && !this.gestureMultiPointer) this.handleTap(point);
       this.gestureStart = undefined;
       this.gestureMoved = false;
       this.gestureMultiPointer = false;
@@ -726,6 +875,10 @@ export class MapRenderer {
 
   private readonly handlePointerCancel = (event: PointerEvent): void => {
     this.activePointers.delete(event.pointerId);
+    if (this.editorPointerId === event.pointerId) {
+      this.editorPointerHandler?.pointerCancel();
+      this.editorPointerId = undefined;
+    }
     this.gestureMoved = true;
     if (this.activePointers.size === 0) this.gestureStart = undefined;
   };
@@ -745,6 +898,14 @@ export class MapRenderer {
     return {
       midpoint: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
       distance: Math.hypot(second.x - first.x, second.y - first.y),
+    };
+  }
+
+  private editorPointer(screen: ScreenPoint): NetworkEditorPointer {
+    return {
+      screen,
+      lonLat: this.camera.screenToLonLat(screen),
+      hit: this.hitTestNetwork(screen),
     };
   }
 
