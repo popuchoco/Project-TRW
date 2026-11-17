@@ -15,8 +15,9 @@ import type { VillageGeometryData, VillageGeometryRecord } from '../map/village-
 import { VillageGeometryLookup } from '../map/village-lookup';
 import { MapCamera, type ScreenPoint } from './camera';
 import { separatePolygonRings } from './polygon-rings';
-import type { Network } from '../city/network';
-import { createEmptyNetwork } from '../city/network';
+import { isRenderFrameActive } from './RenderScheduler';
+import { createEmptyNetwork, haversineKm, type Network } from '../city/network';
+import { followCameraTarget, type FollowState, type FollowTrainDisplay } from '../city/follow';
 import {
   bboxForTowns,
   chooseInitialMetroBounds,
@@ -44,6 +45,59 @@ interface PointerPosition extends ScreenPoint {
 interface PinchState {
   midpoint: ScreenPoint;
   distance: number;
+}
+
+interface RouteProgress {
+  segmentIndex: number;
+  distanceKm: number;
+}
+
+interface FollowHandlers {
+  start(trainId: string, lineId: string): void;
+  drag(): void;
+  trainGone(trainId: string): void;
+}
+
+// 可調：點選列車標記的命中半徑。
+const TRAIN_MARKER_HIT_RADIUS_PX = 12;
+// 可調：忽略方向估算中的微小位置變化。
+const TRAIN_DIRECTION_EPSILON_KM = 0.000001;
+
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function routeProgress(train: TrainPosition, network: Network): RouteProgress | undefined {
+  const line = network.lines.find(({ id }) => id === train.lineId);
+  if (!line) return undefined;
+  const stationsById = new Map(network.stations.map((station) => [station.id, station]));
+  const stations = line.stationIds.map((id) => stationsById.get(id)).filter((station) => station !== undefined);
+  let cumulativeKm = 0;
+  let nearestDistanceSquared = Number.POSITIVE_INFINITY;
+  let result: RouteProgress | undefined;
+  for (let index = 0; index + 1 < stations.length; index += 1) {
+    const start = stations[index]!;
+    const end = stations[index + 1]!;
+    const latitudeScale = Math.cos(((start.lat + end.lat + train.lat) / 3) * Math.PI / 180);
+    const startX = start.lon * latitudeScale;
+    const endX = end.lon * latitudeScale;
+    const trainX = train.lon * latitudeScale;
+    const dx = endX - startX;
+    const dy = end.lat - start.lat;
+    const lengthSquared = dx * dx + dy * dy;
+    const amount = lengthSquared === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((trainX - startX) * dx + (train.lat - start.lat) * dy) / lengthSquared));
+    const distanceSquared = (trainX - (startX + amount * dx)) ** 2
+      + (train.lat - (start.lat + amount * dy)) ** 2;
+    const segmentKm = haversineKm(start.lon, start.lat, end.lon, end.lat);
+    if (distanceSquared < nearestDistanceSquared) {
+      nearestDistanceSquared = distanceSquared;
+      result = { segmentIndex: index, distanceKm: cumulativeKm + amount * segmentKm };
+    }
+    cumulativeKm += segmentKm;
+  }
+  return result;
 }
 
 export type NetworkEditorHit =
@@ -166,6 +220,9 @@ export class MapRenderer {
   private networkPreview?: Network;
   private selectedNetworkItem?: NetworkSelection;
   private trainPositions: TrainPosition[] = [];
+  private followState: FollowState = { kind: 'idle' };
+  private followHandlers?: FollowHandlers;
+  private readonly trainDirections = new Map<string, 1 | -1>();
   private editorPointerHandler?: NetworkEditorPointerHandler;
   private editorPointerId?: number;
   private metroViewActive = false;
@@ -179,6 +236,7 @@ export class MapRenderer {
   private gestureStart?: ScreenPoint;
   private gestureMoved = false;
   private gestureMultiPointer = false;
+  private followDragNotified = false;
   private pinchState?: PinchState;
   private readonly onResize = (): void => this.handleResize();
 
@@ -245,6 +303,7 @@ export class MapRenderer {
 
   setNetwork(network: Network): void {
     this.network = network;
+    this.trainDirections.clear();
     this.networkPreview = undefined;
     this.drawNetwork();
     this.drawTrainMarkers();
@@ -265,17 +324,93 @@ export class MapRenderer {
 
   setTrainPositions(trains: readonly TrainPosition[]): void {
     const hadVisibleTrains = this.hasVisibleTrains;
+    const followed = this.followState;
+    const previousFollowedTrain = followed.kind === 'followingTrain'
+      ? this.trainPositions.find(({ id, lineId }) => id === followed.trainId && lineId === followed.lineId)
+      : undefined;
     const changed = trains.length !== this.trainPositions.length || trains.some((train, index) => {
       const previous = this.trainPositions[index];
       return !previous || previous.id !== train.id || previous.lineId !== train.lineId
         || previous.lon !== train.lon || previous.lat !== train.lat;
     });
-    if (!changed) return;
-    this.trainPositions = trains.map((train) => ({ ...train }));
-    if (hadVisibleTrains || this.hasVisibleTrains) {
+
+    if (changed) this.trainPositions = trains.map((train) => ({ ...train }));
+
+    if (followed.kind === 'followingTrain') {
+      const train = this.trainPositions.find(({ id, lineId }) => id === followed.trainId && lineId === followed.lineId);
+      const previousProgress = previousFollowedTrain ? routeProgress(previousFollowedTrain, this.network) : undefined;
+      const currentProgress = train ? routeProgress(train, this.network) : undefined;
+      const difference = currentProgress && previousProgress
+        ? currentProgress.distanceKm - previousProgress.distanceKm
+        : 0;
+      const direction = Math.abs(difference) > TRAIN_DIRECTION_EPSILON_KM
+        ? difference > 0 ? 1 : -1
+        : this.trainDirections.get(followed.trainId) ?? 1;
+      if (train) this.trainDirections.set(train.id, direction);
+    } else {
+      this.trainDirections.clear();
+    }
+    if (followed.kind === 'followingTrain' && !this.trainPositions.some(({ id, lineId }) =>
+      id === followed.trainId && lineId === followed.lineId)) {
+      this.followHandlers?.trainGone(followed.trainId);
+    }
+
+    if (changed && (hadVisibleTrains || this.hasVisibleTrains)) {
       this.drawTrainMarkers();
       this.requestRender();
     }
+
+    const target = followCameraTarget(this.trainPositions, this.followState);
+    if (target && this.metroViewActive && isRenderFrameActive()) {
+      const center = project([target.lon, target.lat]);
+      if (center.x !== this.camera.center.x || center.y !== this.camera.center.y) {
+        this.camera.center = center;
+        this.updateCameraDisplay();
+      }
+    }
+  }
+
+  setFollowState(state: FollowState): void {
+    if (state.kind !== this.followState.kind
+      || (state.kind === 'followingTrain' && this.followState.kind === 'followingTrain'
+        && (state.trainId !== this.followState.trainId || state.lineId !== this.followState.lineId))) {
+      this.trainDirections.clear();
+    }
+    this.followState = state;
+  }
+
+  setFollowHandlers(handlers?: FollowHandlers): void {
+    this.followHandlers = handlers;
+  }
+
+  getTrainOnLine(lineId: string): TrainPosition | undefined {
+    return this.trainPositions
+      .filter((train) => train.lineId === lineId)
+      .sort((a, b) => compareText(a.id, b.id))[0];
+  }
+
+  getFollowDisplayInfo(): FollowTrainDisplay | undefined {
+    const followState = this.followState;
+    if (followState.kind === 'idle') return undefined;
+    const train = this.trainPositions.find(({ id, lineId }) =>
+      id === followState.trainId && lineId === followState.lineId);
+    const line = this.network.lines.find(({ id }) => id === followState.lineId);
+    if (!train || !line) return undefined;
+    const stationsById = new Map(this.network.stations.map((station) => [station.id, station]));
+    const stations = line.stationIds.map((id) => stationsById.get(id)).filter((station) => station !== undefined);
+    const progress = routeProgress(train, this.network);
+    if (!progress || stations.length < 2) return undefined;
+    const direction = this.trainDirections.get(train.id) ?? 1;
+    const nextStation = direction > 0
+      ? stations[Math.min(progress.segmentIndex + 1, stations.length - 1)]
+      : stations[Math.max(progress.segmentIndex, 0)];
+    if (!nextStation) return undefined;
+    return {
+      lineId: line.id,
+      lineName: line.name,
+      direction: direction > 0 ? '順向' : '逆向',
+      nextStationName: nextStation.name,
+    };
   }
 
   setEditorPointerHandler(handler?: NetworkEditorPointerHandler): void {
@@ -866,6 +1001,7 @@ export class MapRenderer {
       this.gestureStart = point;
       this.gestureMoved = false;
       this.gestureMultiPointer = false;
+      this.followDragNotified = false;
       this.pinchState = undefined;
       if (this.metroViewActive && this.editorPointerHandler?.pointerDown(this.editorPointer(point))) {
         this.editorPointerId = event.pointerId;
@@ -878,6 +1014,7 @@ export class MapRenderer {
       this.gestureMoved = true;
       this.gestureMultiPointer = true;
       this.pinchState = this.currentPinchState();
+      this.notifyFollowDrag();
     }
   };
 
@@ -895,11 +1032,13 @@ export class MapRenderer {
       }
       this.pinchState = nextPinch;
       this.gestureMoved = true;
+      this.notifyFollowDrag();
       this.updateCameraDisplay();
       return;
     }
     if (this.gestureStart && Math.hypot(point.x - this.gestureStart.x, point.y - this.gestureStart.y) > 4) {
       this.gestureMoved = true;
+      this.notifyFollowDrag();
     }
     if (this.editorPointerId === event.pointerId) {
       this.editorPointerHandler?.pointerMove(this.editorPointer(point));
@@ -985,6 +1124,11 @@ export class MapRenderer {
       }
     }
     if (this.metroViewActive) {
+      const train = this.hitTestTrain(point);
+      if (train) {
+        this.followHandlers?.start(train.id, train.lineId);
+        return;
+      }
       const worldPoint = this.camera.screenToWorld(point);
       this.onVillageSelect(this.hitVillage(worldPoint.x, worldPoint.y));
       return;
@@ -996,6 +1140,25 @@ export class MapRenderer {
     } else if (feature) {
       this.select(feature);
     }
+  }
+
+  private hitTestTrain(screen: ScreenPoint): TrainPosition | undefined {
+    let nearest: { train: TrainPosition; distance: number } | undefined;
+    for (const train of this.trainPositions) {
+      const point = this.camera.lonLatToScreen([train.lon, train.lat]);
+      const distance = Math.hypot(point.x - screen.x, point.y - screen.y);
+      if (distance <= TRAIN_MARKER_HIT_RADIUS_PX && (!nearest || distance < nearest.distance
+        || (distance === nearest.distance && compareText(train.id, nearest.train.id) < 0))) {
+        nearest = { train, distance };
+      }
+    }
+    return nearest?.train;
+  }
+
+  private notifyFollowDrag(): void {
+    if (this.followDragNotified) return;
+    this.followDragNotified = true;
+    this.followHandlers?.drag();
   }
 
   private select(feature: TownFeature): void {

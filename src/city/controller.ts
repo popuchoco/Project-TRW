@@ -12,6 +12,7 @@ import {
 } from './commands';
 import { History } from './history';
 import { lineSpacingWarnings, type Network } from './network';
+import { followReducer, type FollowEvent, type FollowState } from './follow';
 import type { TransitModeId } from './modes';
 import { MapRenderer, type NetworkEditorPointer, type NetworkSelection } from '../render/MapRenderer';
 
@@ -60,6 +61,7 @@ export interface CityController {
   syncNetwork(network: Network): void;
   executeNetworkCommand(command: NetworkCommand, selection?: NetworkSelection): Network;
   selectNetworkItem(selection?: NetworkSelection): void;
+  followLine(lineId: string): boolean;
   bindControls(): void;
   attachRenderer(
     createdRenderer: MapRenderer,
@@ -80,6 +82,15 @@ export function createCityController({
   let selectedNetworkItem: NetworkSelection;
   let activeEditorTool: EditorTool = 'select';
   let newLineMode: TransitModeId = 'brt';
+  let followState: FollowState = { kind: 'idle' };
+
+  const transitionFollow = (event: FollowEvent): void => {
+    const next = followReducer(followState, event);
+    if (next === followState) return;
+    followState = next;
+    rendererState.current?.setFollowState(followState);
+    updatePanels();
+  };
 
   const updateEditorControls = (): void => {
     const network = networkHistory.network;
@@ -110,6 +121,10 @@ export function createCityController({
       : '';
   };
   const syncNetwork = (network: Network): void => {
+    const followedLineId = followState.kind === 'followingTrain' ? followState.lineId : undefined;
+    if (followedLineId && !network.lines.some(({ id }) => id === followedLineId)) {
+      transitionFollow({ type: 'lineDeleted', lineId: followedLineId });
+    }
     if (selectedNetworkItem?.type === 'station'
       && !network.stations.some(({ id }) => id === selectedNetworkItem?.id)) selectedNetworkItem = undefined;
     if (selectedNetworkItem?.type === 'line'
@@ -155,6 +170,10 @@ export function createCityController({
     ui.undoButton.addEventListener('click', () => syncNetwork(networkHistory.undo()));
     ui.redoButton.addEventListener('click', () => syncNetwork(networkHistory.redo()));
     document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        transitionFollow({ type: 'escape' });
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
@@ -168,11 +187,28 @@ export function createCityController({
     });
   };
 
+  const followLine = (lineId: string): boolean => {
+    const line = networkHistory.network.lines.find(({ id }) => id === lineId);
+    const train = rendererState.current?.getTrainOnLine(lineId);
+    if (!line || !train) {
+      showStatus('目前沒有可跟隨的列車。');
+      return false;
+    }
+    transitionFollow({ type: 'start', trainId: train.id, lineId: line.id });
+    return true;
+  };
+
   const attachRenderer = (
     createdRenderer: MapRenderer,
     hasVillageGeometry: () => boolean,
     restoredPayload?: CityRestoreState,
   ): ((point: readonly [number, number]) => NetworkCommand) => {
+    createdRenderer.setFollowState(followState);
+    createdRenderer.setFollowHandlers({
+      start: (trainId, lineId) => transitionFollow({ type: 'start', trainId, lineId }),
+      drag: () => transitionFollow({ type: 'drag' }),
+      trainGone: (trainId) => transitionFollow({ type: 'trainGone', trainId }),
+    });
     const showAllNorthNorthButton = document.createElement('button');
     showAllNorthNorthButton.type = 'button';
     showAllNorthNorthButton.className = ui.returnIslandButton.className;
@@ -352,6 +388,7 @@ export function createCityController({
     syncNetwork,
     executeNetworkCommand,
     selectNetworkItem,
+    followLine,
     bindControls,
     attachRenderer,
   };

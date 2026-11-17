@@ -7,6 +7,7 @@ import {
   type Network,
 } from '../city/network';
 import { MAX_NAME_LENGTH } from '../city/limits';
+import type { FollowTrainInfo } from '../city/follow';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
 import type { TransitSummarySnapshot } from '../sim/transit';
 import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
@@ -60,11 +61,13 @@ export interface PanelCallbacks {
   renameStation(stationId: string, name: string): void;
   setLineTrains(lineId: string, peakTrains: number, offPeakTrains: number): void;
   setLineCars(lineId: string, cars: number): void;
+  followLine(lineId: string): void;
 }
 
 export interface SimulationPanels {
   element: HTMLElement;
   update(network: Network, snapshot: TransitSummarySnapshot | undefined, selectedStationId?: string): void;
+  updateFollowInfo(info: FollowTrainInfo | undefined): void;
 }
 
 interface PeriodRow {
@@ -141,6 +144,9 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
   card.append(sectionFlowChart.element);
 
   const controls = element('div', 'line-card-controls');
+  const followButton = element('button', 'source-button', '跟隨列車');
+  followButton.type = 'button';
+  followButton.addEventListener('click', () => callbacks.followLine(line.id));
   const peakInput = element('input', 'panel-range');
   peakInput.type = 'range';
   peakInput.min = '0';
@@ -181,7 +187,7 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
   cardsSetLineInputs(line, peakInput, peakOutput, offPeakInput, offPeakOutput, carsInput, carsOutput);
   peakInput.addEventListener('input', () => callbacks.setLineTrains(line.id, Number(peakInput.value), Number(offPeakInput.value)));
   offPeakInput.addEventListener('input', () => callbacks.setLineTrains(line.id, Number(peakInput.value), Number(offPeakInput.value)));
-  controls.append(carsControl);
+  controls.append(carsControl, followButton);
   card.append(controls);
 
   const periodTable = element('div', 'line-periods');
@@ -328,7 +334,11 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const routes = makeSection('路線卡');
   const lineCardsContainer = element('div', 'line-cards');
   routes.content.append(lineCardsContainer);
-  root.append(city.section, station.section, routes.section);
+  const follow = makeSection('跟隨列車');
+  const followDetails = element('p', 'panel-placeholder');
+  follow.content.append(followDetails);
+  follow.section.hidden = true;
+  root.append(city.section, station.section, routes.section, follow.section);
   container.append(root);
 
   const lineCards = new Map<string, LineCard>();
@@ -392,5 +402,17 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     routes.section.hidden = network.lines.length === 0;
   };
 
-  return { element: root, update };
+  const updateFollowInfo = (info: FollowTrainInfo | undefined): void => {
+    follow.section.hidden = !info;
+    if (!info) {
+      followDetails.textContent = '';
+      return;
+    }
+    const loadFactor = info.loadFactor !== undefined && Number.isFinite(info.loadFactor)
+      ? formatPanelPercent(info.loadFactor)
+      : '—';
+    followDetails.textContent = `線名：${info.lineName}　方向：${info.direction}　下一站：${info.nextStationName}　估計負載率：${loadFactor}（模擬值）`;
+  };
+
+  return { element: root, update, updateFollowInfo };
 }

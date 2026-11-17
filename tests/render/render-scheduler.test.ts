@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { RenderScheduler } from '../../src/render/RenderScheduler';
+import { followReducer, type FollowState } from '../../src/city/follow';
+import { isRenderFrameActive, RenderScheduler } from '../../src/render/RenderScheduler';
 
 function createFrameDriver() {
   let nextHandle = 1;
@@ -34,6 +35,22 @@ describe('RenderScheduler', () => {
     expect(renderCount).toBe(0);
     expect(scheduler.renderCount).toBe(0);
     expect(driver.pendingCount()).toBe(0);
+  });
+
+  it('marks the pre-render callback as an active render frame', () => {
+    const driver = createFrameDriver();
+    let activeDuringCallback = false;
+    const scheduler = new RenderScheduler({
+      render: () => {},
+      requestAnimationFrame: driver.requestAnimationFrame,
+      cancelAnimationFrame: driver.cancelAnimationFrame,
+      beforeFrame: () => { activeDuringCallback = isRenderFrameActive(); },
+    });
+    scheduler.invalidate();
+    driver.frame(16);
+
+    expect(activeDuringCallback).toBe(true);
+    expect(isRenderFrameActive()).toBe(false);
   });
 
   it('coalesces multiple invalidations into one render in a frame', () => {
@@ -105,6 +122,27 @@ describe('RenderScheduler', () => {
 
     driver.frame(16);
 
+    expect(renderCount).toBe(0);
+    expect(scheduler.renderCount).toBe(0);
+    expect(driver.pendingCount()).toBe(0);
+  });
+
+  it('does not render over five simulated seconds while paused with a train followed', () => {
+    const driver = createFrameDriver();
+    let renderCount = 0;
+    const scheduler = new RenderScheduler({
+      render: () => { renderCount += 1; },
+      requestAnimationFrame: driver.requestAnimationFrame,
+      cancelAnimationFrame: driver.cancelAnimationFrame,
+    });
+    const following: FollowState = followReducer({ kind: 'idle' }, {
+      type: 'start', trainId: 'l1-train-1', lineId: 'l1',
+    });
+    scheduler.setSimulationActivity(false, true);
+
+    for (let timestamp = 0; timestamp <= 5_000; timestamp += 100) driver.frame(timestamp);
+
+    expect(following.kind).toBe('followingTrain');
     expect(renderCount).toBe(0);
     expect(scheduler.renderCount).toBe(0);
     expect(driver.pendingCount()).toBe(0);

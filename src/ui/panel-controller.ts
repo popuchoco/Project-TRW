@@ -77,6 +77,13 @@ export function createPanelController({
       latestTransitSnapshot,
       selectedNetworkItem?.type === 'station' ? selectedNetworkItem.id : undefined,
     );
+    const followDisplay = getMapRenderer()?.getFollowDisplayInfo();
+    const lineStats = followDisplay
+      ? latestTransitSnapshot?.lines.find(({ lineId }) => lineId === followDisplay.lineId)
+      : undefined;
+    const loadFactor = lineStats?.periods.find(({ periodId }) =>
+      periodId === latestTransitSnapshot?.currentPeriodId)?.maxLoadFactor;
+    panelControllerRef.current?.updateFollowInfo(followDisplay ? { ...followDisplay, loadFactor } : undefined);
   };
   const saveStateProviders: SaveStateProviders = {
     getNetwork: () => networkHistory.network,
@@ -149,6 +156,7 @@ export function createPanelController({
           showStatus(error instanceof Error ? error.message : '無法調整列車節數。');
         }
       },
+      followLine: (lineId) => { cityController.followLine(lineId); },
     });
     panelControllerRef.current.element.hidden = !rendererState.current?.isMetroView;
     updatePanels();
