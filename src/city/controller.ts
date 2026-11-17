@@ -173,6 +173,12 @@ export function createCityController({
     hasVillageGeometry: () => boolean,
     restoredPayload?: CityRestoreState,
   ): ((point: readonly [number, number]) => NetworkCommand) => {
+    const showAllNorthNorthButton = document.createElement('button');
+    showAllNorthNorthButton.type = 'button';
+    showAllNorthNorthButton.className = ui.returnIslandButton.className;
+    showAllNorthNorthButton.textContent = '顯示全北北';
+    ui.returnIslandButton.parentElement?.insertBefore(showAllNorthNorthButton, ui.returnIslandButton);
+    showAllNorthNorthButton.addEventListener('click', () => createdRenderer.showAllNorthNorth());
     ui.enterMetroButton.addEventListener('click', () => createdRenderer.enterMetroView());
     ui.returnIslandButton.addEventListener('click', () => createdRenderer.returnToIslandView());
 
@@ -332,7 +338,9 @@ export function createCityController({
     createdRenderer.setNetwork(networkHistory.network);
     updateSpacingHint(networkHistory.network);
     updateEditorControls();
-    if (restoredPayload?.view === 'metro') createdRenderer.enterMetroView();
+    if (restoredPayload?.view === 'metro') {
+      createdRenderer.enterMetroView({ savedCamera: restoredPayload.camera });
+    }
     if (restoredPayload) createdRenderer.setCameraView(restoredPayload.camera.x, restoredPayload.camera.y, restoredPayload.camera.zoom);
     return stationCommandAt;
   };

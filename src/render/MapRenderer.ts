@@ -17,6 +17,13 @@ import { MapCamera, type ScreenPoint } from './camera';
 import { separatePolygonRings } from './polygon-rings';
 import type { Network } from '../city/network';
 import { createEmptyNetwork } from '../city/network';
+import {
+  bboxForTowns,
+  chooseInitialMetroBounds,
+  TAIPEI_CORE_TOWNCODES,
+  villageBoundsFromGeometry,
+  type SavedCameraView,
+} from '../city/metro-focus';
 import type { TrainPosition } from '../sim/protocol';
 
 type CountyLayers = Map<string, Container>;
@@ -60,6 +67,9 @@ export interface NetworkEditorPointerHandler {
 export type NetworkSelection = { type: 'station' | 'line'; id: string } | undefined;
 
 const LOD_RANK: Record<LodId, number> = { lod0: 0, lod1: 1, lod2: 2, lod3: 3 };
+// 可調：都會視圖取框時保留畫面邊緣空間的比例。
+const METRO_FIT_WIDTH_PADDING = 0.92;
+const METRO_FIT_HEIGHT_PADDING = 0.88;
 const INSET_CAPTIONS: Record<InsetId, string> = {
   diaoyutai: '釣魚臺列嶼（宜蘭縣頭城鎮）',
   dongsha: '東沙（高雄市旗津區）',
@@ -146,6 +156,7 @@ export class MapRenderer {
   private readonly townBounds: QuadTree<DataManifest['towns'][number]>;
   private readonly insetFeatures: TownFeature[];
   private readonly northNorthBounds: BBox;
+  private readonly coreTownBounds: BBox;
   private insetLayouts = new Map<InsetId, InsetLayout>();
   private selectedCode?: string;
   private villageGeometry?: VillageGeometryData;
@@ -158,6 +169,9 @@ export class MapRenderer {
   private editorPointerHandler?: NetworkEditorPointerHandler;
   private editorPointerId?: number;
   private metroViewActive = false;
+  private metroInitialFocusPending = false;
+  private coreVillageBounds?: BBox;
+  private allVillageBounds?: BBox;
   private islandViewBeforeMetro?: { x: number; y: number; zoom: number };
   private desiredLod: LodId = 'lod0';
   private visibleCountyCodes: string[] = [];
@@ -182,6 +196,7 @@ export class MapRenderer {
     this.insetFeatures = insetFeatures;
     this.camera = new MapCamera(app.screen.width, app.screen.height, this.mainBounds());
     this.northNorthBounds = this.boundsForNorthNorth();
+    this.coreTownBounds = this.boundsForTownCodes(TAIPEI_CORE_TOWNCODES) ?? this.northNorthBounds;
     this.townBounds = new QuadTree(manifest.towns, (town) => town.bbox);
     this.villagesRoot.visible = false;
     this.networkRoot.visible = false;
@@ -357,11 +372,13 @@ export class MapRenderer {
   }
 
   panBy(dx: number, dy: number): void {
+    this.metroInitialFocusPending = false;
     this.camera.panBy(dx, dy);
     this.updateCameraDisplay();
   }
 
   zoomAt(factor: number, x: number, y: number): void {
+    this.metroInitialFocusPending = false;
     this.camera.zoomAt(factor, x, y);
     this.updateCameraDisplay();
   }
@@ -371,7 +388,7 @@ export class MapRenderer {
     this.updateCameraDisplay();
   }
 
-  enterMetroView(): void {
+  enterMetroView(options: { savedCamera?: SavedCameraView } = {}): void {
     if (this.metroViewActive) return;
     this.islandViewBeforeMetro = {
       x: this.camera.center.x,
@@ -385,9 +402,20 @@ export class MapRenderer {
     this.simulationRoot.visible = false;
     this.selectedCode = undefined;
     this.rebuildSelection();
-    this.focusNorthNorthBounds();
+    const initialBounds = chooseInitialMetroBounds({
+      savedCamera: options.savedCamera,
+      core: this.coreVillageBounds ?? this.coreTownBounds,
+      all: this.allVillageBounds ?? this.northNorthBounds,
+    });
+    this.metroInitialFocusPending = Boolean(initialBounds && !this.villageGeometry);
+    if (initialBounds) this.focusBounds(initialBounds);
     this.villagesRoot.visible = Boolean(this.villageGeometry);
     this.onMetroViewChange(true);
+  }
+
+  showAllNorthNorth(): void {
+    this.metroInitialFocusPending = false;
+    this.focusBounds(this.allVillageBounds ?? this.northNorthBounds);
   }
 
   returnToIslandView(): void {
@@ -410,6 +438,9 @@ export class MapRenderer {
   /** Install worker-decoded North–North geometry and return the six-class breaks. */
   setVillageGeometry(geometry: VillageGeometryData): number[] {
     this.villageGeometry = geometry;
+    const boundsRecords = villageBoundsFromGeometry(geometry);
+    this.coreVillageBounds = bboxForTowns(boundsRecords, TAIPEI_CORE_TOWNCODES);
+    this.allVillageBounds = bboxForTowns(boundsRecords, boundsRecords.map(({ TOWNCODE }) => TOWNCODE));
     this.villageLookup = new VillageGeometryLookup(geometry);
     const densities = geometry.villages
       .filter((village) => village.populationMatched)
@@ -417,6 +448,10 @@ export class MapRenderer {
     this.villageDensityBreaks = buildDensityBreaks(densities);
     this.buildVillageLayer(geometry);
     this.villagesRoot.visible = this.metroViewActive;
+    if (this.metroViewActive && this.metroInitialFocusPending) {
+      this.focusBounds(this.coreVillageBounds ?? this.coreTownBounds);
+      this.metroInitialFocusPending = false;
+    }
     this.requestRender();
     return [...this.villageDensityBreaks];
   }
@@ -468,11 +503,18 @@ export class MapRenderer {
     );
   }
 
-  private focusNorthNorthBounds(): void {
-    const [minX, minY, maxX, maxY] = projectBBox(this.northNorthBounds);
+  private boundsForTownCodes(codes: readonly string[]): BBox | undefined {
+    return bboxForTowns(
+      this.manifest.towns.map((town) => ({ TOWNCODE: town.code, bbox: town.bbox })),
+      codes,
+    );
+  }
+
+  private focusBounds(bounds: BBox): void {
+    const [minX, minY, maxX, maxY] = projectBBox(bounds);
     const fitScale = Math.min(
-      (this.camera.width * 0.92) / (maxX - minX),
-      (this.camera.height * 0.88) / (maxY - minY),
+      (this.camera.width * METRO_FIT_WIDTH_PADDING) / (maxX - minX),
+      (this.camera.height * METRO_FIT_HEIGHT_PADDING) / (maxY - minY),
     );
     this.camera.setView((minX + maxX) / 2, (minY + maxY) / 2, fitScale / this.camera.fitScale);
     this.updateCameraDisplay();
@@ -967,7 +1009,7 @@ export class MapRenderer {
     this.camera.resize(this.app.screen.width, this.app.screen.height);
     this.rebuildInsets();
     if (this.metroViewActive) {
-      this.focusNorthNorthBounds();
+      this.focusBounds(this.allVillageBounds ?? this.northNorthBounds);
       return;
     }
     this.updateCameraDisplay();
