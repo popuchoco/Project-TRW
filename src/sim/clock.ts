@@ -44,6 +44,11 @@ export class FixedStepClock {
     this.currentSpeed = speed;
   }
 
+  /** Drops a partial wall-time interval when starting or loading a saved tick state. */
+  resetAccumulator(): void {
+    this.accumulatorMs = 0;
+  }
+
   advance(wallDeltaMs: number): number {
     if (!Number.isFinite(wallDeltaMs) || wallDeltaMs < 0) {
       throw new RangeError('wallDeltaMs must be a non-negative finite number.');

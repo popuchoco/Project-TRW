@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FixedStepClock, FIXED_TICK_MS, type SimSpeed } from '../../src/sim/clock';
-import { createSim, snapshotOf, step, type SimInput, type SimSnapshot } from '../../src/sim/core';
+import { createSim, resumeSim, snapshotOf, step, type SimInput, type SimSnapshot } from '../../src/sim/core';
 import { interpolateSnapshots } from '../../src/sim/interpolate';
 import { isMainToWorkerMessage, isWorkerToMainMessage } from '../../src/sim/protocol';
 
@@ -61,6 +61,20 @@ describe('simulation core determinism', () => {
     expect(next.gameTimeMs).toBe(FIXED_TICK_MS);
     expect(next.entities[0]?.id).toBe('dummy-train');
   });
+
+  it('restores a saved continuation and produces the same next snapshot', () => {
+    let state = createSim(731);
+    for (let tick = 0; tick < 50; tick += 1) state = step(state);
+    const restored = resumeSim({
+      seed: state.seed,
+      rngState: state.rngState,
+      seq: state.seq,
+      gameTimeMs: state.gameTimeMs,
+      routeProgress: state.routeProgress,
+    });
+    expect(snapshotOf(restored)).toEqual(snapshotOf(state));
+    expect(snapshotOf(step(restored))).toEqual(snapshotOf(step(state)));
+  });
 });
 
 describe('fixed-step simulation clock', () => {
@@ -119,11 +133,17 @@ describe('snapshot interpolation', () => {
   const previous: SimSnapshot = {
     seq: 1,
     gameTimeMs: 100,
+    seed: 1,
+    rngState: 1,
+    routeProgress: 0.3,
     entities: [{ id: 'dummy-train', lon: 120, lat: 23 }],
   };
   const next: SimSnapshot = {
     seq: 2,
     gameTimeMs: 200,
+    seed: 1,
+    rngState: 1,
+    routeProgress: 0.4,
     entities: [{ id: 'dummy-train', lon: 122, lat: 25 }],
   };
 

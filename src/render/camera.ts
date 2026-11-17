@@ -44,6 +44,14 @@ export class MapCamera {
     this.scale = this.fitScale * Math.min(this.maxZoom, Math.max(this.minZoom, zoom));
   }
 
+  setView(x: number, y: number, zoom: number): void {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) {
+      throw new RangeError('Camera view coordinates and zoom must be finite.');
+    }
+    this.center = { x, y };
+    this.scale = this.fitScale * Math.min(this.maxZoom, Math.max(this.minZoom, zoom));
+  }
+
   panBy(dx: number, dy: number): void {
     this.center.x -= dx / this.scale;
     this.center.y -= dy / this.scale;

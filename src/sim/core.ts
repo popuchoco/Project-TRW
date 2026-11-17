@@ -9,7 +9,18 @@ export interface EntityState {
 export interface SimSnapshot {
   seq: number;
   gameTimeMs: number;
+  seed: number;
+  rngState: number;
+  routeProgress: number;
   entities: EntityState[];
+}
+
+export interface SimContinuationState {
+  seed: number;
+  rngState: number;
+  seq: number;
+  gameTimeMs: number;
+  routeProgress: number;
 }
 
 export interface SimState {
@@ -67,6 +78,26 @@ export function createSim(seed: number): SimState {
   };
 }
 
+/** Restores the deterministic state needed to continue the fixed-step simulation. */
+export function resumeSim(saved: SimContinuationState): SimState {
+  if (!Number.isSafeInteger(saved.seed) || saved.seed < 0 || saved.seed > 0xffff_ffff ||
+      !Number.isSafeInteger(saved.rngState) || saved.rngState < 0 || saved.rngState > 0xffff_ffff ||
+      !Number.isSafeInteger(saved.seq) || saved.seq < 0 ||
+      !Number.isFinite(saved.gameTimeMs) || saved.gameTimeMs < 0 ||
+      !Number.isFinite(saved.routeProgress) || saved.routeProgress < 0 || saved.routeProgress >= 1) {
+    throw new RangeError('Invalid simulation continuation state.');
+  }
+  const [lon, lat] = routePosition(saved.routeProgress);
+  return {
+    seed: saved.seed,
+    rngState: saved.rngState,
+    seq: saved.seq,
+    gameTimeMs: saved.gameTimeMs,
+    routeProgress: saved.routeProgress,
+    entities: [{ id: 'dummy-train', lon, lat }],
+  };
+}
+
 /** Advances one fixed 100 ms game tick without mutating the input state. */
 export function step(state: SimState, inputs: readonly SimInput[] = []): SimState {
   let routeProgress = state.routeProgress;
@@ -91,6 +122,9 @@ export function snapshotOf(state: SimState): SimSnapshot {
   return {
     seq: state.seq,
     gameTimeMs: state.gameTimeMs,
+    seed: state.seed,
+    rngState: state.rngState,
+    routeProgress: state.routeProgress,
     entities: state.entities.map((entity) => ({ ...entity })),
   };
 }

@@ -1,14 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { buildCacheNames, CACHE_MATCH_OPTIONS } from "../../src/sw/cache";
+import { buildCacheNames, CACHE_MATCH_OPTIONS, deleteObsoleteTrwCaches, type CacheStorageKeys } from "../../src/sw/cache";
 import { buildPrecacheList } from "../../src/sw/precache";
 import { classifyRequest } from "../../src/sw/routes";
 
 describe("service worker cache names", () => {
-  it("includes the app and boundary data versions", () => {
-    expect(buildCacheNames("0.0.0", "1140318")).toEqual({
-      shell: "trw-shell-v0.0.0-d1140318",
-      runtime: "trw-runtime-v0.0.0-d1140318",
+  it("includes the app, town and village data versions, and precache build hash", () => {
+    expect(buildCacheNames("0.0.0", "1140318-v1150817-p11510", "12ab34cd")).toEqual({
+      shell: "trw-shell-v0.0.0-d1140318-v1150817-p11510-b12ab34cd",
+      runtime: "trw-runtime-v0.0.0-d1140318-v1150817-p11510-b12ab34cd",
     });
+  });
+
+  it("creates different cache names when the precache list changes", async () => {
+    const hashList = async (paths: readonly string[]): Promise<string> => {
+      const { createHash } = await import("node:crypto");
+      return createHash("sha256").update(JSON.stringify(paths)).digest("hex").slice(0, 8);
+    };
+    const first = buildCacheNames("0.0.0", "1140318-v1150817-p11510", await hashList(["./index.html", "./assets/app-a.js"]));
+    const second = buildCacheNames("0.0.0", "1140318-v1150817-p11510", await hashList(["./index.html", "./assets/app-b.js"]));
+
+    expect(first).not.toEqual(second);
+    expect(first.shell).not.toBe(second.shell);
+    expect(first.runtime).not.toBe(second.runtime);
+  });
+
+  it("deletes obsolete trw caches and keeps current and unrelated caches", async () => {
+    const names = buildCacheNames("0.0.0", "1140318-v1150817-p11510", "12ab34cd");
+    const existing = [names.shell, names.runtime, "trw-shell-old", "trw-runtime-old", "other-app-cache"];
+    const deleted: string[] = [];
+    const storage: CacheStorageKeys = {
+      async keys() { return existing; },
+      async delete(name) {
+        deleted.push(name);
+        return true;
+      },
+    };
+
+    await deleteObsoleteTrwCaches(storage, names);
+
+    expect(deleted.sort()).toEqual(["trw-runtime-old", "trw-shell-old"]);
   });
 });
 

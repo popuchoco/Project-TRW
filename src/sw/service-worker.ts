@@ -1,10 +1,11 @@
-import { buildCacheNames, CACHE_MATCH_OPTIONS } from "./cache";
+import { buildCacheNames, CACHE_MATCH_OPTIONS, deleteObsoleteTrwCaches } from "./cache";
 import { classifyRequest } from "./routes";
 
 const APP_VERSION = "__TRW_APP_CACHE_VERSION__";
 const DATA_VERSION = "__TRW_DATA_CACHE_VERSION__";
+const BUILD_HASH = "__TRW_BUILD_HASH__";
 const PRECACHE_URLS = JSON.parse("__TRW_PRECACHE_JSON__") as string[];
-const CACHE_NAMES = buildCacheNames(APP_VERSION, DATA_VERSION);
+const CACHE_NAMES = buildCacheNames(APP_VERSION, DATA_VERSION, BUILD_HASH);
 
 interface ExtendableEventLike extends Event {
   waitUntil(promise: Promise<unknown>): void;
@@ -37,10 +38,7 @@ worker.addEventListener("install", (event) => {
 worker.addEventListener("activate", (event) => {
   const activateEvent = event as ExtendableEventLike;
   activateEvent.waitUntil((async () => {
-    const cacheNames = await caches.keys();
-    await Promise.all(cacheNames
-      .filter((name) => name.startsWith("trw-") && name !== CACHE_NAMES.shell && name !== CACHE_NAMES.runtime)
-      .map((name) => caches.delete(name)));
+    await deleteObsoleteTrwCaches(caches, CACHE_NAMES);
     await worker.clients.claim();
   })());
 });

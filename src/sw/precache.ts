@@ -12,5 +12,5 @@ const STATIC_PRECACHE = [
 export function buildPrecacheList(generatedAssets: readonly string[]): string[] {
   return [...STATIC_PRECACHE, ...generatedAssets]
     .filter((path, index, all) => all.indexOf(path) === index)
-    .sort((left, right) => left === "./index.html" ? -1 : right === "./index.html" ? 1 : left.localeCompare(right));
+    .sort((left, right) => left === "./index.html" ? -1 : right === "./index.html" ? 1 : left < right ? -1 : left > right ? 1 : 0);
 }

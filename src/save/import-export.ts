@@ -34,5 +34,5 @@ export function triggerSaveDownload(record: SaveRecord): void {
   link.href = url;
   link.download = "project-trw-save.json";
   link.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

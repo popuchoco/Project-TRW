@@ -8,6 +8,8 @@ const RECORD_KEY = "current";
 export class IndexedDbSaveStorage implements SaveStorage {
   private databasePromise?: Promise<IDBDatabase>;
 
+  constructor(private readonly indexedDbFactory?: IDBFactory) {}
+
   read(): Promise<unknown | undefined> {
     return this.withStore("readonly", (store) => {
       const request = store.get(RECORD_KEY);
@@ -29,19 +31,33 @@ export class IndexedDbSaveStorage implements SaveStorage {
   }
 
   private open(): Promise<IDBDatabase> {
-    this.databasePromise ??= new Promise((resolve, reject) => {
-      if (typeof indexedDB === "undefined") {
-        reject(new Error("IndexedDB is unavailable in this browser."));
-        return;
+    if (!this.databasePromise) {
+      const factory = this.indexedDbFactory ?? (typeof indexedDB === "undefined" ? undefined : indexedDB);
+      if (!factory) {
+        return Promise.reject(new Error("IndexedDB is unavailable in this browser."));
       }
-      const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
-      request.onupgradeneeded = () => {
-        if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME);
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error ?? new Error("Unable to open save database."));
-      request.onblocked = () => reject(new Error("Save database upgrade is blocked by another tab."));
-    });
+      const opening = new Promise<IDBDatabase>((resolve, reject) => {
+        const request = factory.open(DATABASE_NAME, DATABASE_VERSION);
+        request.onupgradeneeded = () => {
+          if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME);
+        };
+        request.onsuccess = () => {
+          const database = request.result;
+          database.onversionchange = () => {
+            database.close();
+            this.databasePromise = undefined;
+          };
+          resolve(database);
+        };
+        request.onerror = () => reject(request.error ?? new Error("Unable to open save database."));
+        // A blocked upgrade may complete after another tab closes; keep waiting for success or error.
+        request.onblocked = () => undefined;
+      });
+      this.databasePromise = opening.catch((error: unknown) => {
+        this.databasePromise = undefined;
+        throw error;
+      });
+    }
     return this.databasePromise;
   }
 

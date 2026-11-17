@@ -5,7 +5,19 @@ import { chooseLod, type LodId } from '../map/lod';
 import { QuadTree } from '../map/quadtree';
 import { project, projectBBox, unproject, type PlanePoint } from '../map/projection';
 import type { BBox, DataManifest, GeoFeature, TownProperties } from '../map/types';
+import {
+  buildDensityBreaks,
+  DENSITY_PALETTE,
+  densityClassIndex,
+  UNMATCHED_VILLAGE_COLOR,
+} from '../map/village-density';
+import type { VillageGeometryData, VillageGeometryRecord } from '../map/village-geometry';
+import { VillageGeometryLookup } from '../map/village-lookup';
 import { MapCamera, type ScreenPoint } from './camera';
+import { separatePolygonRings } from './polygon-rings';
+import type { Network } from '../city/network';
+import { createEmptyNetwork } from '../city/network';
+import type { TrainPosition } from '../sim/protocol';
 
 type CountyLayers = Map<string, Container>;
 type InsetId = 'diaoyutai' | 'dongsha' | 'nansha';
@@ -26,6 +38,26 @@ interface PinchState {
   midpoint: ScreenPoint;
   distance: number;
 }
+
+export type NetworkEditorHit =
+  | { type: 'station'; stationId: string }
+  | { type: 'line'; lineId: string; segmentIndex: number }
+  | undefined;
+
+export interface NetworkEditorPointer {
+  screen: ScreenPoint;
+  lonLat: [number, number];
+  hit: NetworkEditorHit;
+}
+
+export interface NetworkEditorPointerHandler {
+  pointerDown(pointer: NetworkEditorPointer): boolean;
+  pointerMove(pointer: NetworkEditorPointer): void;
+  pointerUp(pointer: NetworkEditorPointer, dragged: boolean): void;
+  pointerCancel(): void;
+}
+
+export type NetworkSelection = { type: 'station' | 'line'; id: string } | undefined;
 
 const LOD_RANK: Record<LodId, number> = { lod0: 0, lod1: 1, lod2: 2, lod3: 3 };
 const INSET_CAPTIONS: Record<InsetId, string> = {
@@ -67,13 +99,34 @@ function colorForFeature(feature: GeoFeature<TownProperties>): number {
   return townColor(feature.properties.TOWNCODE);
 }
 
+function colorFromHex(value: string, fallback = 0x3194d0): number {
+  if (!/^#[0-9a-fA-F]{6}$/.test(value)) return fallback;
+  return Number.parseInt(value.slice(1), 16);
+}
+
+function distanceToSegment(point: ScreenPoint, start: ScreenPoint, end: ScreenPoint): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const amount = lengthSquared === 0
+    ? 0
+    : Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+  return Math.hypot(point.x - (start.x + amount * dx), point.y - (start.y + amount * dy));
+}
+
 /** Builds static Pixi display objects; camera changes only transform and cull them. */
 export class MapRenderer {
   readonly camera: MapCamera;
   private readonly mapRoot = new Container();
+  private readonly villagesRoot = new Container();
+  private readonly networkRoot = new Container();
+  private readonly networkGraphics = new Graphics();
   private readonly selectionRoot = new Container();
   private readonly screenRoot = new Container();
   private readonly labelsRoot = new Container();
+  private readonly stationGraphics = new Graphics();
+  private readonly trainGraphics = new Graphics();
+  private readonly editPreviewGraphics = new Graphics();
   private readonly simulationRoot = new Container();
   private readonly insetsRoot = new Container();
   private readonly simulationMarker = new Graphics()
@@ -92,8 +145,20 @@ export class MapRenderer {
   private readonly labelByCounty = new Map<string, Text>();
   private readonly townBounds: QuadTree<DataManifest['towns'][number]>;
   private readonly insetFeatures: TownFeature[];
+  private readonly northNorthBounds: BBox;
   private insetLayouts = new Map<InsetId, InsetLayout>();
   private selectedCode?: string;
+  private villageGeometry?: VillageGeometryData;
+  private villageLookup?: VillageGeometryLookup;
+  private villageDensityBreaks: number[] = [];
+  private network: Network = createEmptyNetwork();
+  private networkPreview?: Network;
+  private selectedNetworkItem?: NetworkSelection;
+  private trainPositions: TrainPosition[] = [];
+  private editorPointerHandler?: NetworkEditorPointerHandler;
+  private editorPointerId?: number;
+  private metroViewActive = false;
+  private islandViewBeforeMetro?: { x: number; y: number; zoom: number };
   private desiredLod: LodId = 'lod0';
   private visibleCountyCodes: string[] = [];
   private readonly activePointers = new Map<number, PointerPosition>();
@@ -110,12 +175,28 @@ export class MapRenderer {
     insetFeatures: TownFeature[],
     private readonly onSelect: (feature: TownFeature) => void,
     private readonly onViewChange: (lod: LodId, visibleCounties: string[], zoom: number) => void,
+    private readonly onVillageSelect: (village: VillageGeometryRecord | undefined) => void,
+    private readonly onMetroViewChange: (active: boolean) => void,
+    private readonly onInvalidate: () => void,
   ) {
     this.insetFeatures = insetFeatures;
     this.camera = new MapCamera(app.screen.width, app.screen.height, this.mainBounds());
+    this.northNorthBounds = this.boundsForNorthNorth();
     this.townBounds = new QuadTree(manifest.towns, (town) => town.bbox);
-    this.app.stage.addChild(this.mapRoot, this.selectionRoot, this.screenRoot);
-    this.screenRoot.addChild(this.labelsRoot, this.simulationRoot, this.insetsRoot);
+    this.villagesRoot.visible = false;
+    this.networkRoot.visible = false;
+    this.stationGraphics.visible = false;
+    this.trainGraphics.visible = false;
+    this.app.stage.addChild(this.mapRoot, this.villagesRoot, this.networkRoot, this.selectionRoot, this.screenRoot);
+    this.networkRoot.addChild(this.networkGraphics);
+    this.screenRoot.addChild(
+      this.labelsRoot,
+      this.stationGraphics,
+      this.trainGraphics,
+      this.editPreviewGraphics,
+      this.simulationRoot,
+      this.insetsRoot,
+    );
     this.simulationRoot.addChild(this.simulationMarker);
     this.setLodFeatures('lod0', initialFeatures);
     this.installPointerHandlers();
@@ -133,6 +214,110 @@ export class MapRenderer {
 
   get zoom(): number {
     return this.camera.zoom;
+  }
+
+  get isMetroView(): boolean {
+    return this.metroViewActive;
+  }
+
+  get hasVisibleTrains(): boolean {
+    if (!this.metroViewActive) return false;
+    return this.trainPositions.some((train) => {
+      const point = this.camera.lonLatToScreen([train.lon, train.lat]);
+      return point.x >= 0 && point.x <= this.camera.width && point.y >= 0 && point.y <= this.camera.height;
+    });
+  }
+
+  setNetwork(network: Network): void {
+    this.network = network;
+    this.networkPreview = undefined;
+    this.drawNetwork();
+    this.drawTrainMarkers();
+    this.requestRender();
+  }
+
+  setNetworkPreview(network?: Network): void {
+    this.networkPreview = network;
+    this.drawNetwork();
+    this.requestRender();
+  }
+
+  setNetworkSelection(selection: NetworkSelection): void {
+    this.selectedNetworkItem = selection;
+    this.drawNetwork();
+    this.requestRender();
+  }
+
+  setTrainPositions(trains: readonly TrainPosition[]): void {
+    const hadVisibleTrains = this.hasVisibleTrains;
+    const changed = trains.length !== this.trainPositions.length || trains.some((train, index) => {
+      const previous = this.trainPositions[index];
+      return !previous || previous.id !== train.id || previous.lineId !== train.lineId
+        || previous.lon !== train.lon || previous.lat !== train.lat;
+    });
+    if (!changed) return;
+    this.trainPositions = trains.map((train) => ({ ...train }));
+    if (hadVisibleTrains || this.hasVisibleTrains) {
+      this.drawTrainMarkers();
+      this.requestRender();
+    }
+  }
+
+  setEditorPointerHandler(handler?: NetworkEditorPointerHandler): void {
+    this.editorPointerHandler = handler;
+    this.editorPointerId = undefined;
+    this.editPreviewGraphics.clear();
+    this.requestRender();
+  }
+
+  setEditPreviewLine(start?: [number, number], end?: [number, number]): void {
+    this.editPreviewGraphics.clear();
+    if (start && end) {
+      const first = this.camera.lonLatToScreen(start);
+      const second = this.camera.lonLatToScreen(end);
+      this.editPreviewGraphics
+        .moveTo(first.x, first.y)
+        .lineTo(second.x, second.y)
+        .stroke({ color: 0x153c54, alpha: 0.8, width: 2, pixelLine: true });
+    }
+    this.requestRender();
+  }
+
+  villageNameAt(lon: number, lat: number): { name: string; townName: string } | undefined {
+    const village = this.villageLookup?.find(lon, lat);
+    return village ? { name: village.name, townName: village.townName } : undefined;
+  }
+
+  hitTestNetwork(screen: ScreenPoint): NetworkEditorHit {
+    const network = this.networkPreview ?? this.network;
+    let nearestStation: { id: string; distance: number } | undefined;
+    for (const station of network.stations) {
+      const point = this.camera.lonLatToScreen([station.lon, station.lat]);
+      const distance = Math.hypot(point.x - screen.x, point.y - screen.y);
+      if (distance <= 12 && (!nearestStation || distance < nearestStation.distance)) {
+        nearestStation = { id: station.id, distance };
+      }
+    }
+    if (nearestStation) return { type: 'station', stationId: nearestStation.id };
+
+    let nearestLine: { lineId: string; segmentIndex: number; distance: number } | undefined;
+    const stationsById = new Map(network.stations.map((station) => [station.id, station]));
+    for (const line of network.lines) {
+      for (let segmentIndex = 0; segmentIndex + 1 < line.stationIds.length; segmentIndex += 1) {
+        const startStation = stationsById.get(line.stationIds[segmentIndex]!);
+        const endStation = stationsById.get(line.stationIds[segmentIndex + 1]!);
+        if (!startStation || !endStation) continue;
+        const start = this.camera.lonLatToScreen([startStation.lon, startStation.lat]);
+        const end = this.camera.lonLatToScreen([endStation.lon, endStation.lat]);
+        const distance = distanceToSegment(screen, start, end);
+        if (distance <= 9 && (!nearestLine || distance < nearestLine.distance)) {
+          nearestLine = { lineId: line.id, segmentIndex, distance };
+        }
+      }
+    }
+    return nearestLine
+      ? { type: 'line', lineId: nearestLine.lineId, segmentIndex: nearestLine.segmentIndex }
+      : undefined;
   }
 
   setLodFeatures(lod: Exclude<LodId, 'lod3'>, features: TownFeature[]): void {
@@ -181,9 +366,66 @@ export class MapRenderer {
     this.updateCameraDisplay();
   }
 
+  setCameraView(x: number, y: number, zoom: number): void {
+    this.camera.setView(x, y, zoom);
+    this.updateCameraDisplay();
+  }
+
+  enterMetroView(): void {
+    if (this.metroViewActive) return;
+    this.islandViewBeforeMetro = {
+      x: this.camera.center.x,
+      y: this.camera.center.y,
+      zoom: this.camera.zoom,
+    };
+    this.metroViewActive = true;
+    this.networkRoot.visible = true;
+    this.stationGraphics.visible = true;
+    this.trainGraphics.visible = true;
+    this.simulationRoot.visible = false;
+    this.selectedCode = undefined;
+    this.rebuildSelection();
+    this.focusNorthNorthBounds();
+    this.villagesRoot.visible = Boolean(this.villageGeometry);
+    this.onMetroViewChange(true);
+  }
+
+  returnToIslandView(): void {
+    if (!this.metroViewActive) return;
+    this.metroViewActive = false;
+    this.villagesRoot.visible = false;
+    this.networkRoot.visible = false;
+    this.stationGraphics.visible = false;
+    this.trainGraphics.visible = false;
+    this.simulationRoot.visible = true;
+    const islandView = this.islandViewBeforeMetro;
+    this.islandViewBeforeMetro = undefined;
+    if (islandView) this.camera.setView(islandView.x, islandView.y, islandView.zoom);
+    else this.camera.fit();
+    this.onVillageSelect(undefined);
+    this.onMetroViewChange(false);
+    this.updateCameraDisplay();
+  }
+
+  /** Install worker-decoded North–North geometry and return the six-class breaks. */
+  setVillageGeometry(geometry: VillageGeometryData): number[] {
+    this.villageGeometry = geometry;
+    this.villageLookup = new VillageGeometryLookup(geometry);
+    const densities = geometry.villages
+      .filter((village) => village.populationMatched)
+      .map((village) => village.densityPerKm2!);
+    this.villageDensityBreaks = buildDensityBreaks(densities);
+    this.buildVillageLayer(geometry);
+    this.villagesRoot.visible = this.metroViewActive;
+    this.requestRender();
+    return [...this.villageDensityBreaks];
+  }
+
   setSimulationMarker(lon: number, lat: number): void {
+    if (this.simulationPosition?.[0] === lon && this.simulationPosition[1] === lat) return;
     this.simulationPosition = [lon, lat];
     this.positionSimulationMarker();
+    this.requestRender();
   }
 
   hitTown(lon: number, lat: number): TownFeature | undefined {
@@ -212,16 +454,150 @@ export class MapRenderer {
     );
   }
 
+  private boundsForNorthNorth(): BBox {
+    const towns = this.manifest.towns.filter((town) => town.countyCode === '63000' || town.countyCode === '65000');
+    if (towns.length === 0) return this.mainBounds();
+    return towns.reduce<BBox>(
+      (bounds, town) => [
+        Math.min(bounds[0], town.bbox[0]),
+        Math.min(bounds[1], town.bbox[1]),
+        Math.max(bounds[2], town.bbox[2]),
+        Math.max(bounds[3], town.bbox[3]),
+      ],
+      [...towns[0]!.bbox],
+    );
+  }
+
+  private focusNorthNorthBounds(): void {
+    const [minX, minY, maxX, maxY] = projectBBox(this.northNorthBounds);
+    const fitScale = Math.min(
+      (this.camera.width * 0.92) / (maxX - minX),
+      (this.camera.height * 0.88) / (maxY - minY),
+    );
+    this.camera.setView((minX + maxX) / 2, (minY + maxY) / 2, fitScale / this.camera.fitScale);
+    this.updateCameraDisplay();
+  }
+
+  private buildVillageLayer(geometry: VillageGeometryData): void {
+    this.villagesRoot.removeChildren().forEach((child) => child.destroy());
+    const polygonGroups = geometry.villages.map(() => new Map<number, number[]>());
+    for (let ringIndex = 0; ringIndex < geometry.ringVillageIndices.length; ringIndex += 1) {
+      const villageIndex = geometry.ringVillageIndices[ringIndex]!;
+      const polygonIndex = geometry.ringPolygonIndices[ringIndex]!;
+      const rings = polygonGroups[villageIndex]?.get(polygonIndex) ?? [];
+      rings.push(ringIndex);
+      polygonGroups[villageIndex]?.set(polygonIndex, rings);
+    }
+
+    const graphics = new Graphics();
+    for (let villageIndex = 0; villageIndex < polygonGroups.length; villageIndex += 1) {
+      const group = polygonGroups[villageIndex]!;
+      const village = geometry.villages[villageIndex]!;
+      const color = village.populationMatched
+        ? DENSITY_PALETTE[densityClassIndex(village.densityPerKm2!, this.villageDensityBreaks)]!
+        : UNMATCHED_VILLAGE_COLOR;
+      for (const ringIndexes of group.values()) {
+        const outerIndex = ringIndexes.find((ringIndex) => geometry.ringIsHole[ringIndex] === 0);
+        if (outerIndex === undefined) continue;
+        const outerPoints = this.villageRingPoints(geometry, outerIndex);
+        graphics.poly(outerPoints).fill(color);
+        const holes = ringIndexes.filter((ringIndex) => geometry.ringIsHole[ringIndex] === 1);
+        if (holes.length > 0) {
+          for (const holeIndex of holes) graphics.poly(this.villageRingPoints(geometry, holeIndex));
+          graphics.cut();
+        }
+        graphics.poly(outerPoints).stroke({ color: 0xb7c3bd, width: 0.34, pixelLine: true });
+        for (const holeIndex of holes) {
+          graphics.poly(this.villageRingPoints(geometry, holeIndex)).stroke({ color: 0xb7c3bd, width: 0.34, pixelLine: true });
+        }
+      }
+    }
+    this.villagesRoot.addChild(graphics);
+  }
+
+  private villageRingPoints(geometry: VillageGeometryData, ringIndex: number): number[] {
+    const start = geometry.ringOffsets[ringIndex]! * 2;
+    const end = geometry.ringOffsets[ringIndex + 1]! * 2;
+    return Array.from(geometry.coords.subarray(start, end));
+  }
+
+  private hitVillage(x: number, y: number): VillageGeometryRecord | undefined {
+    return this.villageLookup?.findProjected(x, y);
+  }
+
+  private drawNetwork(): void {
+    this.networkGraphics.clear();
+    const network = this.networkPreview ?? this.network;
+    const stationsById = new Map(network.stations.map((station) => [station.id, station]));
+    for (const line of network.lines) {
+      const color = colorFromHex(line.color);
+      const selected = this.selectedNetworkItem?.type === 'line' && this.selectedNetworkItem.id === line.id;
+      for (let index = 0; index + 1 < line.stationIds.length; index += 1) {
+        const first = stationsById.get(line.stationIds[index]!);
+        const second = stationsById.get(line.stationIds[index + 1]!);
+        if (!first || !second) continue;
+        const start = project([first.lon, first.lat]);
+        const end = project([second.lon, second.lat]);
+        this.networkGraphics
+          .moveTo(start.x, start.y)
+          .lineTo(end.x, end.y)
+          .stroke({ color, alpha: selected ? 1 : 0.88, width: selected ? 5 : 3.2, pixelLine: true });
+      }
+    }
+    this.networkRoot.visible = this.metroViewActive;
+    this.drawStationMarkers();
+  }
+
+  private drawStationMarkers(): void {
+    this.stationGraphics.clear();
+    const network = this.networkPreview ?? this.network;
+    for (const station of network.stations) {
+      const point = this.camera.lonLatToScreen([station.lon, station.lat]);
+      const selected = this.selectedNetworkItem?.type === 'station' && this.selectedNetworkItem.id === station.id;
+      this.stationGraphics
+        .circle(point.x, point.y, selected ? 9 : 7)
+        .fill(0xffffff)
+        .circle(point.x, point.y, selected ? 6.2 : 4.8)
+        .fill(selected ? 0xd57435 : 0x215c72);
+    }
+    this.stationGraphics.visible = this.metroViewActive;
+  }
+
+  private drawTrainMarkers(): void {
+    this.trainGraphics.clear();
+    const linesById = new Map(this.network.lines.map((line) => [line.id, line]));
+    for (const train of this.trainPositions) {
+      const point = this.camera.lonLatToScreen([train.lon, train.lat]);
+      const line = linesById.get(train.lineId);
+      const color = line ? colorFromHex(line.color) : 0xd84637;
+      this.trainGraphics
+        .circle(point.x, point.y, 6)
+        .fill({ color: 0xffffff, alpha: 0.96 })
+        .circle(point.x, point.y, 3.6)
+        .fill(color);
+    }
+    this.trainGraphics.visible = this.metroViewActive;
+  }
+
+  requestRender(): void {
+    this.onInvalidate();
+  }
+
   private drawTownGroup(features: TownFeature[]): Container {
     const container = new Container();
     const graphics = new Graphics();
     for (const feature of features) {
       for (const polygon of feature.geometry.coordinates) {
-        const outer = polygon[0];
-        if (!outer || outer.length < 3) continue;
+        const { outer, holes } = separatePolygonRings(polygon);
+        if (!outer) continue;
         graphics.poly(projectedRing(outer)).fill(colorForFeature(feature));
+        // 太麻里鄉有兩個內環；Pixi v8 cut() subtracts them from the fill so the map shows through.
+        if (holes.length > 0) {
+          for (const hole of holes) graphics.poly(projectedRing(hole));
+          graphics.cut();
+        }
         graphics.poly(projectedRing(outer)).stroke({ color: 0xb6b9b4, width: 0.8, pixelLine: true });
-        for (const hole of polygon.slice(1)) {
+        for (const hole of holes) {
           graphics.poly(projectedRing(hole)).stroke({ color: 0xb6b9b4, width: 0.8, pixelLine: true });
         }
       }
@@ -234,8 +610,12 @@ export class MapRenderer {
     const transform = this.camera.rootTransform();
     this.mapRoot.position.set(transform.x, transform.y);
     this.mapRoot.scale.set(this.camera.scale);
+    this.villagesRoot.position.set(transform.x, transform.y);
+    this.villagesRoot.scale.set(this.camera.scale);
     this.selectionRoot.position.set(transform.x, transform.y);
     this.selectionRoot.scale.set(this.camera.scale);
+    this.networkRoot.position.set(transform.x, transform.y);
+    this.networkRoot.scale.set(this.camera.scale);
 
     this.desiredLod = chooseLod(this.camera.zoom);
     this.visibleCountyCodes = this.townBounds
@@ -244,8 +624,12 @@ export class MapRenderer {
       .filter((code, index, codes) => codes.indexOf(code) === index);
     this.refreshVisibility();
     this.positionCountyLabels();
+    this.drawStationMarkers();
+    this.drawTrainMarkers();
     this.positionSimulationMarker();
+    this.insetsRoot.visible = !this.metroViewActive;
     this.onViewChange(this.desiredLod, this.visibleCountyCodes, this.camera.zoom);
+    this.requestRender();
   }
 
   private positionSimulationMarker(): void {
@@ -255,6 +639,7 @@ export class MapRenderer {
   }
 
   private refreshVisibility(): void {
+    this.mapRoot.alpha = this.metroViewActive ? 0.3 : 1;
     const visible = new Set(this.visibleCountyCodes);
     for (const countyLayers of this.layers.values()) {
       for (const container of countyLayers.values()) container.visible = false;
@@ -298,7 +683,7 @@ export class MapRenderer {
       const [minLon, minLat, maxLon, maxLat] = county.bbox;
       const position = this.camera.lonLatToScreen([(minLon + maxLon) / 2, (minLat + maxLat) / 2]);
       label.position.set(position.x, position.y);
-      label.visible = position.x >= -40 && position.x <= this.camera.width + 40 &&
+      label.visible = !this.metroViewActive && position.x >= -40 && position.x <= this.camera.width + 40 &&
         position.y >= -24 && position.y <= this.camera.height + 24;
     }
   }
@@ -440,7 +825,14 @@ export class MapRenderer {
       this.gestureMoved = false;
       this.gestureMultiPointer = false;
       this.pinchState = undefined;
+      if (this.metroViewActive && this.editorPointerHandler?.pointerDown(this.editorPointer(point))) {
+        this.editorPointerId = event.pointerId;
+      }
     } else {
+      if (this.editorPointerId !== undefined) {
+        this.editorPointerHandler?.pointerCancel();
+        this.editorPointerId = undefined;
+      }
       this.gestureMoved = true;
       this.gestureMultiPointer = true;
       this.pinchState = this.currentPinchState();
@@ -467,6 +859,10 @@ export class MapRenderer {
     if (this.gestureStart && Math.hypot(point.x - this.gestureStart.x, point.y - this.gestureStart.y) > 4) {
       this.gestureMoved = true;
     }
+    if (this.editorPointerId === event.pointerId) {
+      this.editorPointerHandler?.pointerMove(this.editorPointer(point));
+      return;
+    }
     const dx = point.x - previous.x;
     const dy = point.y - previous.y;
     if (dx !== 0 || dy !== 0) {
@@ -477,11 +873,17 @@ export class MapRenderer {
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
     const point = this.toScreen(event);
+    const wasEditorPointer = this.editorPointerId === event.pointerId;
+    const dragged = this.gestureMoved;
     const hadPointer = this.activePointers.delete(event.pointerId);
     if (!hadPointer) return;
+    if (wasEditorPointer) {
+      this.editorPointerHandler?.pointerUp(this.editorPointer(point), dragged);
+      this.editorPointerId = undefined;
+    }
     if (this.activePointers.size === 1) this.pinchState = undefined;
     if (this.activePointers.size === 0) {
-      if (!this.gestureMoved && !this.gestureMultiPointer) this.handleTap(point);
+      if (!wasEditorPointer && !this.gestureMoved && !this.gestureMultiPointer) this.handleTap(point);
       this.gestureStart = undefined;
       this.gestureMoved = false;
       this.gestureMultiPointer = false;
@@ -491,6 +893,10 @@ export class MapRenderer {
 
   private readonly handlePointerCancel = (event: PointerEvent): void => {
     this.activePointers.delete(event.pointerId);
+    if (this.editorPointerId === event.pointerId) {
+      this.editorPointerHandler?.pointerCancel();
+      this.editorPointerId = undefined;
+    }
     this.gestureMoved = true;
     if (this.activePointers.size === 0) this.gestureStart = undefined;
   };
@@ -513,33 +919,57 @@ export class MapRenderer {
     };
   }
 
+  private editorPointer(screen: ScreenPoint): NetworkEditorPointer {
+    return {
+      screen,
+      lonLat: this.camera.screenToLonLat(screen),
+      hit: this.hitTestNetwork(screen),
+    };
+  }
+
   private handleTap(point: ScreenPoint): void {
-    for (const layout of this.insetLayouts.values()) {
-      const { box } = layout;
-      if (point.x < box.x || point.x > box.x + box.width || point.y < box.y || point.y > box.y + box.height) continue;
-      const plane = {
-        x: layout.worldCenter.x + (point.x - layout.offset.x) / layout.scale,
-        y: layout.worldCenter.y + (point.y - layout.offset.y) / layout.scale,
-      };
-      const [lon, lat] = unproject(plane);
-      const insetFeature = lookupInset(this.insetFeatures, layout.id, lon, lat);
-      if (insetFeature) this.select(insetFeature);
+    if (!this.metroViewActive) {
+      for (const layout of this.insetLayouts.values()) {
+        const { box } = layout;
+        if (point.x < box.x || point.x > box.x + box.width || point.y < box.y || point.y > box.y + box.height) continue;
+        const plane = {
+          x: layout.worldCenter.x + (point.x - layout.offset.x) / layout.scale,
+          y: layout.worldCenter.y + (point.y - layout.offset.y) / layout.scale,
+        };
+        const [lon, lat] = unproject(plane);
+        const insetFeature = lookupInset(this.insetFeatures, layout.id, lon, lat);
+        if (insetFeature) this.select(insetFeature);
+        return;
+      }
+    }
+    if (this.metroViewActive) {
+      const worldPoint = this.camera.screenToWorld(point);
+      this.onVillageSelect(this.hitVillage(worldPoint.x, worldPoint.y));
       return;
     }
     const [lon, lat] = this.camera.screenToLonLat(point);
     const feature = this.hitTown(lon, lat);
-    if (feature) this.select(feature);
+    if (feature && (feature.properties.COUNTYCODE === '63000' || feature.properties.COUNTYCODE === '65000')) {
+      this.enterMetroView();
+    } else if (feature) {
+      this.select(feature);
+    }
   }
 
   private select(feature: TownFeature): void {
     this.selectedCode = feature.properties.TOWNCODE;
     this.rebuildSelection();
     this.onSelect(feature);
+    this.requestRender();
   }
 
   private handleResize(): void {
     this.camera.resize(this.app.screen.width, this.app.screen.height);
     this.rebuildInsets();
+    if (this.metroViewActive) {
+      this.focusNorthNorthBounds();
+      return;
+    }
     this.updateCameraDisplay();
   }
 }

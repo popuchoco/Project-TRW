@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { chooseLod, LOD_THRESHOLDS } from '../../src/map/lod';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { chooseLod, LOD_THRESHOLDS, scheduleOnceOnIdleOrTrigger } from '../../src/map/lod';
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('LOD thresholds', () => {
   it('selects a single LOD from fit zoom through county detail', () => {
@@ -8,5 +12,22 @@ describe('LOD thresholds', () => {
     expect(chooseLod(LOD_THRESHOLDS.lod2)).toBe('lod2');
     expect(chooseLod(LOD_THRESHOLDS.lod3)).toBe('lod3');
     expect(chooseLod(100)).toBe('lod3');
+  });
+});
+
+describe('deferred LOD preload scheduling', () => {
+  it('runs at most once and cancels the timeout when triggered first', () => {
+    vi.useFakeTimers();
+    const preload = vi.fn();
+    const trigger = scheduleOnceOnIdleOrTrigger(preload);
+
+    vi.advanceTimersByTime(1499);
+    expect(preload).not.toHaveBeenCalled();
+
+    trigger();
+    trigger();
+    vi.advanceTimersByTime(1);
+
+    expect(preload).toHaveBeenCalledTimes(1);
   });
 });

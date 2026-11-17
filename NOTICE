@@ -2,5 +2,17 @@
 提供機關：內政部國土測繪中心
 資料名稱：鄉鎮市區界線(TWD97經緯度)，版本 1140318
 來源：https://data.gov.tw/dataset/7441
-授權：政府資料開放授權條款－第1版 https://data.gov.tw/license
+授權：政府資料開放授權條款第1版 https://data.gov.tw/license
 本專案已對原始資料進行簡化、拆分與格式轉換。
+
+提供機關：國土測繪中心
+資料名稱：村里界圖(TWD97經緯度)，版本 1150817
+來源：https://data.gov.tw/dataset/7438
+授權：政府資料開放授權條款第1版 https://data.gov.tw/license
+本專案已對原始資料進行簡化與格式轉換。
+
+提供機關：內政部戶政司
+資料名稱：村里戶數、單一年齡人口（新增區域代碼），版本 11510
+來源：https://data.gov.tw/dataset/77132
+授權：政府資料開放授權條款第1版 https://data.gov.tw/license
+本專案僅使用區域別代碼、村里、戶數、人口數欄位，並以 VILLCODE 連結界線資料。
