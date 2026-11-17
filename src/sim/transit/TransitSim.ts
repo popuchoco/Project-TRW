@@ -290,7 +290,10 @@ function cloneSnapshot(snapshot: TransitSummarySnapshot): TransitSummarySnapshot
     ...snapshot,
     city: {
       ...snapshot.city,
-      quality: snapshot.city.quality ? { ...snapshot.city.quality } : null,
+      quality: snapshot.city.quality ? {
+        ...snapshot.city.quality,
+        metrics: snapshot.city.quality.metrics ? { ...snapshot.city.quality.metrics } : undefined,
+      } : null,
     },
     stations: snapshot.stations.map((station) => ({
       ...station,
@@ -299,7 +302,10 @@ function cloneSnapshot(snapshot: TransitSummarySnapshot): TransitSummarySnapshot
     })),
     lines: snapshot.lines.map((line) => ({
       ...line,
-      quality: line.quality ? { ...line.quality } : null,
+      quality: line.quality ? {
+        ...line.quality,
+        metrics: line.quality.metrics ? { ...line.quality.metrics } : undefined,
+      } : null,
       spacingWarnings: line.spacingWarnings.map((warning) => ({
         ...warning,
         recommendedKm: [...warning.recommendedKm] as [number, number],

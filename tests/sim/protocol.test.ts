@@ -207,7 +207,19 @@ describe('transit worker protocol guards', () => {
   });
 
   it('validates quality scores and accepts v2 saves whose older snapshots lack them', () => {
-    const numericQuality = { wait: 80, transfer: 70, crowding: 60, denied: 50, total: 66 };
+    const numericQuality = {
+      wait: 80,
+      transfer: 70,
+      crowding: 60,
+      denied: 50,
+      total: 66,
+      metrics: {
+        averageWaitMinutes: 4,
+        averageTransfers: 0.3,
+        averageLoadFactor: 0.9,
+        deniedRatio: 0.02,
+      },
+    };
     expect(isTransitWorkerSnapshot({
       ...transitSnapshot,
       city: { ...transitSnapshot.city, quality: numericQuality },

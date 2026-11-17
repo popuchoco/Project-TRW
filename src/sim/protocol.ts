@@ -226,16 +226,26 @@ function areFiniteNumbers(value: unknown): value is number[] {
   return Array.isArray(value) && value.every(isFiniteNumber);
 }
 
-function isQualityScore(value: unknown): value is QualityScore {
+function isQualityRawStats(value: unknown): boolean {
+  return isRecord(value)
+    && isNonNegativeNumber(value.averageWaitMinutes)
+    && isNonNegativeNumber(value.averageTransfers)
+    && isNonNegativeNumber(value.averageLoadFactor)
+    && isFiniteNumber(value.deniedRatio) && value.deniedRatio >= 0 && value.deniedRatio <= 1;
+}
+
+function isQualityScore(value: unknown, allowMissingMetrics = false): value is QualityScore {
   if (!isRecord(value)) return false;
-  return ['wait', 'transfer', 'crowding', 'denied', 'total'].every((key) => {
+  const validScores = ['wait', 'transfer', 'crowding', 'denied', 'total'].every((key) => {
     const score = value[key];
     return isFiniteNumber(score) && score >= 0 && score <= 100;
   });
+  return validScores && (isQualityRawStats(value.metrics)
+    || (allowMissingMetrics && value.metrics === undefined));
 }
 
 function isQualityOrMissingLegacy(value: unknown, allowMissing: boolean): boolean {
-  return (allowMissing && value === undefined) || value === null || isQualityScore(value);
+  return (allowMissing && value === undefined) || value === null || isQualityScore(value, allowMissing);
 }
 
 function isTransitSummary(value: unknown, allowMissingQuality = false): value is TransitSummarySnapshot {

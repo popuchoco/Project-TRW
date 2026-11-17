@@ -21,6 +21,15 @@ export interface QualityScore {
   crowding: number;
   denied: number;
   total: number;
+  /** Raw values used by the panel detail rows. Optional for older saved snapshots. */
+  metrics?: QualityRawStats;
+}
+
+export interface QualityRawStats {
+  averageWaitMinutes: number;
+  averageTransfers: number;
+  averageLoadFactor: number;
+  deniedRatio: number;
 }
 
 export interface QualityMetrics {
@@ -77,5 +86,17 @@ export function calculateQualityScore(metrics: QualityMetrics): QualityScore | n
     + crowding * QUALITY_WEIGHTS.crowding
     + denied * QUALITY_WEIGHTS.denied
   ) / weightTotal;
-  return { wait, transfer, crowding, denied, total };
+  return {
+    wait,
+    transfer,
+    crowding,
+    denied,
+    total,
+    metrics: {
+      averageWaitMinutes: metrics.averageWaitMinutes,
+      averageTransfers: metrics.averageTransfers,
+      averageLoadFactor: metrics.averageLoadFactor,
+      deniedRatio: metrics.deniedRatio,
+    },
+  };
 }

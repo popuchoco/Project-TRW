@@ -312,6 +312,78 @@ body {
   margin-top: 6px;
 }
 
+.quality-panel {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid #e5e9e9;
+}
+
+.quality-panel-header,
+.quality-total-row,
+.quality-row-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.quality-panel-title {
+  margin: 0;
+  color: #344149;
+  font-size: 11px;
+}
+
+.quality-total-row {
+  margin-top: 4px;
+  color: #637078;
+  font-size: 10px;
+}
+
+.quality-total-value {
+  color: #2f3c43;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.quality-rows {
+  display: grid;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.quality-row-heading {
+  color: #637078;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.quality-row-value {
+  color: #344149;
+  font-variant-numeric: tabular-nums;
+}
+
+.quality-bar-track {
+  height: 4px;
+  overflow: hidden;
+  margin-top: 2px;
+  border-radius: 3px;
+  background: #e5ebea;
+}
+
+.quality-bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #5b9a8d;
+}
+
+.quality-detail {
+  margin: 2px 0 0;
+  color: #69767d;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
 .line-card-controls {
   display: grid;
   grid-template-columns: 1fr 1fr;

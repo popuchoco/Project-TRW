@@ -9,6 +9,7 @@ import {
 import { MAX_NAME_LENGTH } from '../city/limits';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
 import type { TransitSummarySnapshot } from '../sim/transit';
+import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
 
 const numberFormat = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
 const moneyFormat = new Intl.NumberFormat('zh-TW', {
@@ -83,6 +84,7 @@ interface LineCard {
   carsInput?: HTMLInputElement;
   carsOutput?: HTMLElement;
   totalCost: HTMLElement;
+  qualityPanel: QualityPanelRenderer;
   periodRows: Map<SimulationPeriodId, PeriodRow>;
 }
 
@@ -127,6 +129,8 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
   const roundTrip = makeValueRow('來回一趟');
   facts.append(stationCount.row, length.row, roundTrip.row);
   card.append(facts);
+  const qualityPanel = createQualityPanel();
+  card.append(qualityPanel.element);
 
   const controls = element('div', 'line-card-controls');
   const peakInput = element('input', 'panel-range');
@@ -204,6 +208,7 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
     carsInput,
     carsOutput,
     totalCost,
+    qualityPanel,
     periodRows,
   };
 }
@@ -258,6 +263,7 @@ function updateLineCard(card: LineCard, line: Line, network: Network, snapshot: 
   card.totalCost.textContent = `每日營運成本（模擬值）：${formatPanelMoney(lineStats
     ? totalOperatingCost
     : 0)}`;
+  card.qualityPanel.update(lineStats?.quality ?? null, lineStats?.quality?.metrics ?? null);
 }
 
 export function createSimulationPanels(container: HTMLElement, callbacks: PanelCallbacks): SimulationPanels {
@@ -270,7 +276,8 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const cityShare = makeValueRow('捷運＋BRT 佔有率');
   const cityProfit = makeValueRow('盈虧率');
   cityFacts.append(cityRidership.row, cityShare.row, cityProfit.row);
-  city.content.append(cityFacts);
+  const cityQualityPanel = createQualityPanel();
+  city.content.append(cityFacts, cityQualityPanel.element);
 
   const station = makeSection('車站營運概況');
   const stationPlaceholder = element('p', 'panel-placeholder', '選取車站後查看營運概況。');
@@ -317,6 +324,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     cityRidership.value.textContent = `${formatPanelCount(cityStats?.dailyRidership ?? 0)} 人`;
     cityShare.value.textContent = formatPanelPercent(cityStats?.transitShare ?? 0);
     cityProfit.value.textContent = formatPanelPercent(cityStats?.profitLossRatio ?? 0);
+    cityQualityPanel.update(cityStats?.quality ?? null, cityStats?.quality?.metrics ?? null);
 
     const selectedStation = selectedStationId
       ? network.stations.find((candidate) => candidate.id === selectedStationId)

@@ -42,7 +42,19 @@ describe('transit quality score formulas', () => {
       averageTransfers: 0.25,
       averageLoadFactor: 1,
       deniedRatio: 0.05,
-    })).toEqual({ wait: 50, transfer: 75, crowding: 50, denied: 50, total: 55 });
+    })).toEqual({
+      wait: 50,
+      transfer: 75,
+      crowding: 50,
+      denied: 50,
+      total: 55,
+      metrics: {
+        averageWaitMinutes: 6,
+        averageTransfers: 0.25,
+        averageLoadFactor: 1,
+        deniedRatio: 0.05,
+      },
+    });
   });
 
   it('returns null for an empty passenger set and is deterministic', () => {
