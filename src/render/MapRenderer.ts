@@ -177,6 +177,7 @@ export class MapRenderer {
     private readonly onViewChange: (lod: LodId, visibleCounties: string[], zoom: number) => void,
     private readonly onVillageSelect: (village: VillageGeometryRecord | undefined) => void,
     private readonly onMetroViewChange: (active: boolean) => void,
+    private readonly onInvalidate: () => void,
   ) {
     this.insetFeatures = insetFeatures;
     this.camera = new MapCamera(app.screen.width, app.screen.height, this.mainBounds());
@@ -219,6 +220,14 @@ export class MapRenderer {
     return this.metroViewActive;
   }
 
+  get hasVisibleTrains(): boolean {
+    if (!this.metroViewActive) return false;
+    return this.trainPositions.some((train) => {
+      const point = this.camera.lonLatToScreen([train.lon, train.lat]);
+      return point.x >= 0 && point.x <= this.camera.width && point.y >= 0 && point.y <= this.camera.height;
+    });
+  }
+
   setNetwork(network: Network): void {
     this.network = network;
     this.networkPreview = undefined;
@@ -240,9 +249,18 @@ export class MapRenderer {
   }
 
   setTrainPositions(trains: readonly TrainPosition[]): void {
+    const hadVisibleTrains = this.hasVisibleTrains;
+    const changed = trains.length !== this.trainPositions.length || trains.some((train, index) => {
+      const previous = this.trainPositions[index];
+      return !previous || previous.id !== train.id || previous.lineId !== train.lineId
+        || previous.lon !== train.lon || previous.lat !== train.lat;
+    });
+    if (!changed) return;
     this.trainPositions = trains.map((train) => ({ ...train }));
-    this.drawTrainMarkers();
-    this.requestRender();
+    if (hadVisibleTrains || this.hasVisibleTrains) {
+      this.drawTrainMarkers();
+      this.requestRender();
+    }
   }
 
   setEditorPointerHandler(handler?: NetworkEditorPointerHandler): void {
@@ -562,7 +580,7 @@ export class MapRenderer {
   }
 
   requestRender(): void {
-    this.app.renderer.render(this.app.stage);
+    this.onInvalidate();
   }
 
   private drawTownGroup(features: TownFeature[]): Container {

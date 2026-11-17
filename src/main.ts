@@ -5,6 +5,7 @@ import { scheduleOnceOnIdleOrTrigger, type LodId } from './map/lod';
 import { DENSITY_PALETTE } from './map/village-density';
 import type { VillageGeometryRecord } from './map/village-geometry';
 import { MapRenderer, type NetworkEditorPointer, type NetworkSelection } from './render/MapRenderer';
+import { RenderScheduler } from './render/RenderScheduler';
 import { importSaveFile, triggerSaveDownload } from './save/import-export';
 import { IndexedDbSaveStorage } from './save/storage';
 import { loadSave } from './save/save';
@@ -43,6 +44,8 @@ type EditorTool = 'select' | 'place' | 'line' | 'insert';
 
 interface TrwStats {
   fps: number;
+  renderCount: number;
+  rendersPerSecond: number;
   lod: LodId | 'loading';
   visibleCounties: number;
   drawCalls?: number;
@@ -51,6 +54,8 @@ interface TrwStats {
 interface TrwDebug {
   ready: Promise<void>;
   firstMapMs?: number;
+  readonly renderCount: number;
+  readonly rendersPerSecond: number;
   getStats(): TrwStats;
   panBy(dx: number, dy: number): void;
   zoomAt(factor: number, x: number, y: number): void;
@@ -60,6 +65,8 @@ interface TrwDebug {
 
 interface TrwAutomationDebug {
   ready: Promise<void>;
+  readonly renderCount: number;
+  readonly rendersPerSecond: number;
   getState(): {
     network: Network;
     camera: { x: number; y: number; zoom: number };
@@ -82,6 +89,7 @@ const FPS_STORAGE_KEY = 'trw:p0:fpsCap';
 const startedAt = performance.now();
 let app: Application | undefined;
 let mapRenderer: MapRenderer | undefined;
+let renderScheduler: RenderScheduler | undefined;
 let selectedFpsSetting: FpsSetting = 'auto';
 let resolveReady: (() => void) | undefined;
 let currentLodForStats: LodId | 'loading' = 'loading';
@@ -95,9 +103,13 @@ let selectedSimSpeed: SimSpeed = 1;
 const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
 window.__TRW__ = {
   ready,
+  get renderCount() { return renderScheduler?.renderCount ?? 0; },
+  get rendersPerSecond() { return renderScheduler?.getRendersPerSecond() ?? 0; },
   get firstMapMs() { return firstMapMs; },
   getStats: () => ({
-    fps: app?.ticker.FPS ?? 0,
+    fps: renderScheduler?.getRendersPerSecond() ?? 0,
+    renderCount: renderScheduler?.renderCount ?? 0,
+    rendersPerSecond: renderScheduler?.getRendersPerSecond() ?? 0,
     lod: currentLodForStats,
     visibleCounties: visibleCountyCount,
   }),
@@ -346,7 +358,7 @@ function resolveFps(setting: FpsSetting): number {
 
 function setFpsSetting(setting: FpsSetting): void {
   selectedFpsSetting = setting;
-  if (app) app.ticker.maxFPS = resolveFps(setting);
+  renderScheduler?.setMaxFPS(resolveFps(setting));
   const select = document.querySelector<HTMLSelectElement>('.fps-select');
   if (select) select.value = String(setting);
   try {
@@ -611,13 +623,24 @@ async function startApp(): Promise<void> {
     autoStart: false,
     sharedTicker: false,
   });
+  pixiApp.ticker.stop();
   pixiApp.canvas.setAttribute('aria-label', 'Project-TRW 全島地圖');
   mount.prepend(pixiApp.canvas);
-  pixiApp.ticker.maxFPS = resolveFps(selectedFpsSetting);
+  let firstRenderResolved = false;
+  renderScheduler = new RenderScheduler({
+    render: () => pixiApp.renderer.render(pixiApp.stage),
+    maxFPS: resolveFps(selectedFpsSetting),
+    afterRender: () => {
+      if (firstRenderResolved) return;
+      firstRenderResolved = true;
+      firstMapMs = performance.now() - startedAt;
+      resolveReady?.();
+    },
+  });
+  renderScheduler.setEnabled(!document.hidden);
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) pixiApp.ticker.stop();
-    else pixiApp.ticker.start();
+    renderScheduler?.setEnabled(!document.hidden);
     if (document.hidden && simulationClient && !simulationClient.getStatus().paused) {
       automaticPauseOnHide = true;
       simulationClient.pause();
@@ -629,6 +652,11 @@ async function startApp(): Promise<void> {
       transitClient?.resume();
       updateSimulationUi();
     }
+    if (!document.hidden) renderScheduler?.invalidate();
+    renderScheduler?.setSimulationActivity(
+      Boolean(transitClient && !transitClient.getStatus().paused),
+      mapRenderer?.hasVisibleTrains ?? false,
+    );
     if (document.hidden) {
       void saveLiveState().catch((error: unknown) => {
         console.info('Autosave could not be written.', error);
@@ -742,6 +770,10 @@ async function startApp(): Promise<void> {
       currentLodForStats = lod;
       visibleCountyCount = counties.length;
       syncMapData(lod, counties);
+      renderScheduler?.setSimulationActivity(
+        Boolean(transitClient && !transitClient.getStatus().paused),
+        rendererState.current?.hasVisibleTrains ?? false,
+      );
     },
     (village: VillageGeometryRecord | undefined) => {
       if (!village) {
@@ -762,6 +794,7 @@ async function startApp(): Promise<void> {
       if (active) ensureVillageGeometry();
       else if (ui.status.textContent === '載入北北村里資料中…') ui.status.hidden = true;
     },
+    () => renderScheduler?.invalidate(),
   );
   rendererState.current = createdRenderer;
   mapRenderer = createdRenderer;
@@ -936,11 +969,6 @@ async function startApp(): Promise<void> {
   currentLodForStats = createdRenderer.currentLod;
   visibleCountyCount = createdRenderer.countiesInView.length;
 
-  // Initial full-island frame is drawn synchronously before signaling ready.
-  pixiApp.renderer.render(pixiApp.stage);
-  firstMapMs = performance.now() - startedAt;
-  resolveReady?.();
-
   simulationClient = new SimClient(undefined, () => performance.now());
   const restoredSimulation = restoredPayload?.simulation;
   simulationClient.start(restoredSimulation?.seed ?? 0x545257, restoredSimulation, {
@@ -952,6 +980,10 @@ async function startApp(): Promise<void> {
     if ('trains' in snapshot) {
       latestTransitSnapshot = snapshot;
       createdRenderer.setTrainPositions(snapshot.trains);
+      renderScheduler?.setSimulationActivity(
+        Boolean(transitClient && !transitClient.getStatus().paused),
+        createdRenderer.hasVisibleTrains,
+      );
       updatePanels();
     }
   });
@@ -968,6 +1000,8 @@ async function startApp(): Promise<void> {
   );
   window.__trw = {
     ready,
+    get renderCount() { return renderScheduler?.renderCount ?? 0; },
+    get rendersPerSecond() { return renderScheduler?.getRendersPerSecond() ?? 0; },
     getState: () => ({
       network: {
         stations: networkHistory.network.stations.map((station) => ({ ...station })),
@@ -1013,13 +1047,18 @@ async function startApp(): Promise<void> {
     simulationClient.pause();
     transitClient.pause();
   }
-  pixiApp.ticker.add(() => {
-    const entity = simulationClient?.getInterpolatedEntities()[0];
-    if (entity) createdRenderer.setSimulationMarker(entity.lon, entity.lat);
-    createdRenderer.setTrainPositions(transitClient?.getInterpolatedTrainPositions() ?? []);
+  renderScheduler.setBeforeFrame((timestamp) => {
+    createdRenderer.setTrainPositions(transitClient?.getInterpolatedTrainPositions(timestamp) ?? []);
+    renderScheduler?.setSimulationActivity(
+      Boolean(transitClient && !transitClient.getStatus().paused),
+      createdRenderer.hasVisibleTrains,
+    );
   });
+  renderScheduler.setSimulationActivity(
+    Boolean(transitClient && !transitClient.getStatus().paused),
+    createdRenderer.hasVisibleTrains,
+  );
   updateSimulationUi();
-  pixiApp.ticker.start();
   ui.status.hidden = true;
 
   // Keep a finer hit-test topology warm after startup, or as soon as the user zooms.
