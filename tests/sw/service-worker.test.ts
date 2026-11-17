@@ -66,6 +66,13 @@ describe("service worker routes", () => {
 });
 
 describe("precache list", () => {
+  it("includes the Taipei/New Taipei village manifest, population and topology files", () => {
+    const list = buildPrecacheList([]);
+    expect(list).toContain("./data/villages-manifest.json");
+    expect(list).toContain("./data/villages-6300065000.json");
+    expect(list).toContain("./data/villages-6300065000.topo.json");
+  });
+
   it("includes the shell, generated scripts/styles, data manifest, LOD0/LOD1, and insets", () => {
     const list = buildPrecacheList(["./assets/index-abcd.js", "./assets/index-1234.css"]);
     expect(list).toContain("./index.html");

@@ -7,6 +7,9 @@ const STATIC_PRECACHE = [
   "./data/trw-1140318-lod0.topo.json",
   "./data/trw-1140318-lod1.topo.json",
   "./data/trw-1140318-insets.topo.json",
+  "./data/villages-manifest.json",
+  "./data/villages-6300065000.json",
+  "./data/villages-6300065000.topo.json",
 ] as const;
 
 export function buildPrecacheList(generatedAssets: readonly string[]): string[] {
