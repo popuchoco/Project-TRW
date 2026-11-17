@@ -73,6 +73,26 @@ export interface SectionFlowChartRenderer {
   update(flow: SectionFlowByPeriod | undefined, stationNames: readonly string[]): void;
 }
 
+/** Snapshot shape produced by the sim (S10): arrays follow line.stationIds order in both directions. */
+export type SnapshotSectionFlow = Readonly<Record<SimulationPeriodId, {
+  readonly forward: readonly SectionFlowSegment[];
+  readonly backward: readonly SectionFlowSegment[];
+}>>;
+
+/** Converts the sim's per-period forward/backward section flow into the chart input. */
+export function sectionFlowFromSnapshot(flow: SnapshotSectionFlow | undefined): SectionFlowByPeriod | undefined {
+  if (!flow) return undefined;
+  const result = {} as Record<SimulationPeriodId, readonly SectionFlowDirection[]>;
+  for (const periodId of Object.keys(flow) as SimulationPeriodId[]) {
+    const period = flow[periodId];
+    result[periodId] = [
+      { direction: 1, segments: period.forward.map(({ loadFactor }) => ({ loadFactor })) },
+      { direction: -1, segments: period.backward.map(({ loadFactor }) => ({ loadFactor })) },
+    ];
+  }
+  return result;
+}
+
 function loadColorBand(loadFactor: number): SectionFlowColorBand {
   if (loadFactor < SECTION_FLOW_THRESHOLDS.light) return 'light';
   if (loadFactor < SECTION_FLOW_THRESHOLDS.busy) return 'busy';

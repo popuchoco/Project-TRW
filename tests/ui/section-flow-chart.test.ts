@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildSectionFlowChart, type SectionFlowByPeriod } from '../../src/ui/section-flow-chart';
+import {
+  buildSectionFlowChart,
+  sectionFlowFromSnapshot,
+  type SectionFlowByPeriod,
+  type SnapshotSectionFlow,
+} from '../../src/ui/section-flow-chart';
 
 const flow: SectionFlowByPeriod = {
   morningPeak: [
@@ -61,5 +66,28 @@ describe('buildSectionFlowChart', () => {
     expect(morning.bars.map(({ colorBand }) => colorBand)).not.toEqual(offPeak.bars.map(({ colorBand }) => colorBand));
     expect(morning.maxSegment?.loadFactor).toBe(1.01);
     expect(offPeak.maxSegment?.loadFactor).toBe(0.35);
+  });
+});
+
+describe('sectionFlowFromSnapshot', () => {
+  it('maps the sim forward/backward section flow onto chart directions for every period', () => {
+    const period = (forward: number[], backward: number[]) => ({
+      forward: forward.map((loadFactor) => ({ load: loadFactor * 100, capacity: 100, loadFactor })),
+      backward: backward.map((loadFactor) => ({ load: loadFactor * 100, capacity: 100, loadFactor })),
+    });
+    const snapshot: SnapshotSectionFlow = {
+      morningPeak: period([0.5, 1.1], [0.2, 0.3]),
+      offPeak: period([0.1, 0.1], [0.1, 0.1]),
+      eveningPeak: period([0.7, 0.9], [0.4, 0.6]),
+      night: period([0, 0], [0, 0]),
+    };
+    const chartInput = sectionFlowFromSnapshot(snapshot);
+    expect(chartInput?.morningPeak).toEqual([
+      { direction: 1, segments: [{ loadFactor: 0.5 }, { loadFactor: 1.1 }] },
+      { direction: -1, segments: [{ loadFactor: 0.2 }, { loadFactor: 0.3 }] },
+    ]);
+    const model = buildSectionFlowChart(chartInput!, ['甲站', '乙站', '丙站'], 'morningPeak', { width: 200, height: 100 });
+    expect(model.maxSegment).toEqual({ dir: 1, segmentIndex: 1, loadFactor: 1.1 });
+    expect(sectionFlowFromSnapshot(undefined)).toBeUndefined();
   });
 });

@@ -15,7 +15,7 @@ import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
 import { buildPassengerViewModel, createPassengerView, type PassengerStationNames } from './passenger-view';
 import {
   createSectionFlowChart,
-  type SectionFlowByPeriod,
+  sectionFlowFromSnapshot,
   type SectionFlowChartRenderer,
 } from './section-flow-chart';
 
@@ -286,8 +286,8 @@ function updateLineCard(card: LineCard, line: Line, network: Network, snapshot: 
     ? totalOperatingCost
     : 0)}`;
   card.qualityPanel.update(lineStats?.quality ?? null, lineStats?.quality?.metrics ?? null);
-  // S10's line snapshot adds sectionFlowByPeriod; keep the UI optional until that data is present.
-  const sectionFlow = (lineStats as { sectionFlowByPeriod?: SectionFlowByPeriod } | undefined)?.sectionFlowByPeriod;
+  // Older saved snapshots may lack section flow; the chart then shows its empty state.
+  const sectionFlow = sectionFlowFromSnapshot(lineStats?.sectionFlow);
   const stationNames = line.stationIds.map((stationId) => network.stations.find(({ id }) => id === stationId)?.name ?? stationId);
   card.sectionFlowChart.update(sectionFlow, stationNames);
 }
