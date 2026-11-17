@@ -8,6 +8,8 @@ import {
   isTransitLoadStateResultMessage,
   isTransitMainToWorkerMessage,
   isTransitPauseMessage,
+  isTransitRequestRepresentativePassengerMessage,
+  isTransitRepresentativePassengerResultMessage,
   isTransitResumeMessage,
   isTransitSaveStateMessage,
   isTransitSaveStateResultMessage,
@@ -142,6 +144,23 @@ const transitSnapshot: TransitWorkerSnapshot = {
   recomputeMs: 0,
 };
 
+const representativePassenger = {
+  selectedStationId: 's1',
+  odKey: 'village-a>village-b',
+  flow: 12,
+  startStationId: 's1',
+  endStationId: 's2',
+  pathSignature: 'l1:s1>s2:0+',
+  legs: [
+    { kind: 'walkIn', minutes: 0, toStationId: 's1' },
+    { kind: 'wait', minutes: 2, lineId: 'l1', fromStationId: 's1', toStationId: 's1' },
+    { kind: 'ride', minutes: 3, lineId: 'l1', fromStationId: 's1', toStationId: 's2' },
+    { kind: 'walkOut', minutes: 0, fromStationId: 's2' },
+  ],
+  doorToDoorMinutes: 5,
+  alternativeMinutes: 20,
+};
+
 const villageSource = {
   kind: 'data',
   villages: [{ VILLCODE: '63000000001', population: 123, demandPoint: [121.5, 25] as [number, number] }],
@@ -166,14 +185,22 @@ describe('transit worker protocol guards', () => {
     ['setSpeed', isTransitSetSpeedMessage, { type: 'setSpeed', speed: 4 }],
     ['loadState', isTransitLoadStateMessage, { type: 'loadState', requestId: 'load-1', state: saveState }],
     ['saveState', isTransitSaveStateMessage, { type: 'saveState', requestId: 'save-1' }],
+    ['request representative passenger', isTransitRequestRepresentativePassengerMessage,
+      { type: 'requestRepresentativePassenger', requestId: 'representative-1', stationId: 's1' }],
     ['main-to-worker union', isTransitMainToWorkerMessage, startMessage],
     ['transit snapshot payload', isTransitWorkerSnapshot, transitSnapshot],
     ['snapshot', isTransitSnapshotMessage, { type: 'snapshot', snapshot: transitSnapshot }],
     ['save state', isTransitWorkerSaveState, saveState],
     ['save state result', isTransitSaveStateResultMessage, { type: 'saveStateResult', requestId: 'save-1', state: saveState }],
     ['load state result', isTransitLoadStateResultMessage, { type: 'loadStateResult', requestId: 'load-1', ok: true }],
+    ['representative passenger result', isTransitRepresentativePassengerResultMessage,
+      { type: 'representativePassengerResult', requestId: 'representative-1', passenger: representativePassenger }],
+    ['empty representative passenger result', isTransitRepresentativePassengerResultMessage,
+      { type: 'representativePassengerResult', requestId: 'representative-2', passenger: null }],
     ['error', isTransitErrorMessage, { type: 'error', message: 'worker error', requestId: 'load-1' }],
     ['worker-to-main union', isTransitWorkerToMainMessage, { type: 'snapshot', snapshot: transitSnapshot }],
+    ['worker-to-main union', isTransitWorkerToMainMessage,
+      { type: 'representativePassengerResult', requestId: 'representative-1', passenger: representativePassenger }],
   ])('accepts a valid %s message', (_name, guard, message) => {
     expect(guard(message)).toBe(true);
   });
@@ -186,12 +213,16 @@ describe('transit worker protocol guards', () => {
     ['setSpeed', isTransitSetSpeedMessage, { type: 'setSpeed', speed: 3 }],
     ['loadState', isTransitLoadStateMessage, { type: 'loadState', state: saveState }],
     ['saveState', isTransitSaveStateMessage, { type: 'saveState', requestId: 5 }],
+    ['request representative passenger', isTransitRequestRepresentativePassengerMessage,
+      { type: 'requestRepresentativePassenger', requestId: 'representative-1', stationId: '' }],
     ['main-to-worker union', isTransitMainToWorkerMessage, { type: 'unknown' }],
     ['transit snapshot payload', isTransitWorkerSnapshot, { ...transitSnapshot, seq: -1 }],
     ['snapshot', isTransitSnapshotMessage, { type: 'snapshot', snapshot: undefined }],
     ['save state', isTransitWorkerSaveState, { ...saveState, transit: undefined }],
     ['save state result', isTransitSaveStateResultMessage, { type: 'saveStateResult', requestId: 'save-1' }],
     ['load state result', isTransitLoadStateResultMessage, { type: 'loadStateResult', requestId: 'load-1', ok: false }],
+    ['representative passenger result', isTransitRepresentativePassengerResultMessage,
+      { type: 'representativePassengerResult', requestId: 'representative-1', passenger: { ...representativePassenger, flow: -1 } }],
     ['error', isTransitErrorMessage, { type: 'error' }],
     ['worker-to-main union', isTransitWorkerToMainMessage, { type: 'unknown' }],
   ])('rejects a malformed %s message', (_name, guard, message) => {

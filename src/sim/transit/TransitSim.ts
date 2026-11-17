@@ -7,6 +7,7 @@ import {
   type Network,
   type Station,
 } from '../../city/network';
+import { compareText } from '../compare';
 import {
   GAME_DAY_MS,
   SIMULATION_BALANCE,
@@ -29,6 +30,15 @@ import {
   type WalkAccess,
 } from './graph';
 import { calculateQualityScore, type QualityScore } from './quality';
+import {
+  buildRepresentativeTripPath,
+  compareRepresentativeTripRouteKeys,
+  representativeStationIds,
+  representativeTripRouteOrder,
+  selectRepresentativeTrip,
+  type RepresentativePassenger,
+  type RepresentativeTripRoute,
+} from './representative';
 
 export interface ModeShares {
   transit: number;
@@ -160,6 +170,7 @@ interface EquilibriumRoute {
 interface VillageToStationPath {
   path: TransitPath;
   timeSeconds: number;
+  walkSeconds: number;
 }
 
 type VillagePathTable = Array<Array<VillageToStationPath | null | undefined>>;
@@ -227,10 +238,6 @@ function qualityFromAccumulator(accumulator: QualityAccumulator): QualityScore |
       : 0,
     deniedRatio: accumulator.attempted > 0 ? accumulator.denied / accumulator.attempted : 0,
   });
-}
-
-function compareText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function segmentKey(lineId: string, segmentIndex: number, direction: 1 | -1): string {
@@ -438,6 +445,7 @@ export class TransitSim {
   private villageToStationCache = new Map<SimulationPeriodId, VillagePathTable>();
   private stationIndexById = new Map<string, number>();
   private equilibrium: PeriodEquilibrium[] = [];
+  private representativeRoutesByPeriod = new Map<SimulationPeriodId, Map<string, RepresentativeTripRoute>>();
   private actualAttempts = new Map<string, number>();
   private gameTime = 0;
   private recomputeCount = 0;
@@ -458,6 +466,13 @@ export class TransitSim {
 
   get demandPairCount(): number {
     return this.demand.pairs.length;
+  }
+
+  /** Returns the highest-flow equilibrium route through a station for the current game period. */
+  representativePassenger(stationId: string): RepresentativePassenger | null {
+    this.ensurePrepared();
+    const route = this.representativeRoutesByPeriod.get(periodAt(this.gameTime))?.get(stationId);
+    return route ? selectRepresentativeTrip([route], stationId) : null;
   }
 
   get pathRecomputeCount(): number {
@@ -584,7 +599,7 @@ export class TransitSim {
       const timeSeconds = access.walkSeconds + path.timeSeconds;
       if (!best || timeSeconds < best.timeSeconds - 1e-9
         || (Math.abs(timeSeconds - best.timeSeconds) <= 1e-9 && path.signature < best.path.signature)) {
-        best = { path, timeSeconds };
+        best = { path, timeSeconds, walkSeconds: access.walkSeconds };
       }
     }
     cache[destinationStationIndex] = best;
@@ -595,8 +610,8 @@ export class TransitSim {
     originIndex: number,
     destinationIndex: number,
     periodId: SimulationPeriodId,
-  ): { path: TransitPath; timeSeconds: number } | null {
-    let best: { path: TransitPath; timeSeconds: number } | null = null;
+  ): { path: TransitPath; timeSeconds: number; walkInSeconds: number; walkOutSeconds: number } | null {
+    let best: { path: TransitPath; timeSeconds: number; walkInSeconds: number; walkOutSeconds: number } | null = null;
     for (const egress of this.villageAccess[destinationIndex]!) {
       const partial = this.villageToStation(originIndex, egress.stationId, periodId);
       if (!partial) continue;
@@ -604,7 +619,12 @@ export class TransitSim {
       if (!best || timeSeconds < best.timeSeconds - 1e-9
         || (Math.abs(timeSeconds - best.timeSeconds) <= 1e-9
           && partial.path.signature < best.path.signature)) {
-        best = { path: partial.path, timeSeconds };
+        best = {
+          path: partial.path,
+          timeSeconds,
+          walkInSeconds: partial.walkSeconds,
+          walkOutSeconds: egress.walkSeconds,
+        };
       }
     }
     return best;
@@ -613,10 +633,12 @@ export class TransitSim {
   private buildEquilibrium(): PeriodEquilibrium[] {
     const byPeriod = new Map<SimulationPeriodId, Map<string, EquilibriumRoute>>();
     const potentialByPeriod = new Map<SimulationPeriodId, number>();
+    this.representativeRoutesByPeriod = new Map();
     for (const period of SIMULATION_BALANCE.periods) {
       const id = period.id;
       byPeriod.set(id, new Map());
       potentialByPeriod.set(id, this.demand.totalDailyTrips * period.demandShare);
+      this.representativeRoutesByPeriod.set(id, new Map());
     }
     const hasReachableStation = this.villageAccess.some((access) => access.length > 0);
     if (this.demand.totalDirectedGravityWeight > 0 && this.graph && hasReachableStation) {
@@ -649,14 +671,21 @@ export class TransitSim {
       const best = this.bestVillagePairPath(originIndex, destinationIndex, group.representative);
       const shares = binaryLogitShares(best?.timeSeconds ?? null, alternativeTime);
       if (!best || shares.transit <= 0) continue;
-      const paths = [best.path, reverseTransitPath(best.path)];
+      const origin = this.demand.villages[originIndex]!;
+      const destination = this.demand.villages[destinationIndex]!;
+      const directions = [
+        { path: best.path, origin, destination, walkInSeconds: best.walkInSeconds, walkOutSeconds: best.walkOutSeconds },
+        { path: reverseTransitPath(best.path), origin: destination, destination: origin,
+          walkInSeconds: best.walkOutSeconds, walkOutSeconds: best.walkInSeconds },
+      ];
       for (const periodId of group.periods) {
         const period = SIMULATION_BALANCE.periods.find(({ id }) => id === periodId)!;
         const potentialTrips = dailyTrips * period.demandShare;
         const desiredTrips = potentialTrips * shares.transit;
         if (desiredTrips <= 0) continue;
         const fareTotal = desiredTrips * fareForDistance(distanceKm);
-        for (const path of paths) {
+        for (const direction of directions) {
+          const path = direction.path;
           const rows = rowsByPeriod.get(periodId)!;
           const existing = rows.get(path.signature);
           if (existing) {
@@ -664,6 +693,31 @@ export class TransitSim {
             existing.fareTotal += fareTotal;
           } else {
             rows.set(path.signature, { path, desiredTrips, fareTotal });
+          }
+          const odKey = `${direction.origin.code}>${direction.destination.code}`;
+          const routeOrder = { odKey, flow: desiredTrips, periodId, pathSignature: path.signature };
+          const stationRoutes = this.representativeRoutesByPeriod.get(periodId)!;
+          const routeStationIds = representativeStationIds(path, this.graph!);
+          const winningStations = routeStationIds.filter((stationId) => {
+            const selected = stationRoutes.get(stationId);
+            return !selected || compareRepresentativeTripRouteKeys(routeOrder, representativeTripRouteOrder(selected)) < 0;
+          });
+          if (winningStations.length > 0) {
+            const candidate: RepresentativeTripRoute = {
+              odKey,
+              flow: desiredTrips,
+              periodId,
+              path: buildRepresentativeTripPath(
+                path,
+                this.graph!,
+                periodId,
+                direction.walkInSeconds,
+                direction.walkOutSeconds,
+                alternativeTime,
+                routeStationIds,
+              ),
+            };
+            for (const stationId of winningStations) stationRoutes.set(stationId, candidate);
           }
         }
       }

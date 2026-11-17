@@ -4,6 +4,7 @@ import { SIM_SPEEDS, type SimSpeed } from './clock';
 import type { SimContinuationState, SimSnapshot } from './core';
 import type { TransitSimSerializedState, TransitSummarySnapshot } from './transit';
 import type { QualityScore } from './transit/quality';
+import type { RepresentativePassenger } from './transit/representative';
 
 export interface LegacyStartMessage {
   type: 'start';
@@ -97,13 +98,20 @@ export interface TransitSaveStateMessage {
   requestId: string;
 }
 
+export interface TransitRequestRepresentativePassengerMessage {
+  type: 'requestRepresentativePassenger';
+  requestId: string;
+  stationId: string;
+}
+
 export type TransitMainToWorkerMessage = TransitStartMessage
   | TransitSetNetworkMessage
   | TransitPauseMessage
   | TransitResumeMessage
   | TransitSetSpeedMessage
   | TransitLoadStateMessage
-  | TransitSaveStateMessage;
+  | TransitSaveStateMessage
+  | TransitRequestRepresentativePassengerMessage;
 
 export interface TransitSnapshotMessage {
   type: 'snapshot';
@@ -122,6 +130,12 @@ export interface TransitLoadStateResultMessage {
   ok: true;
 }
 
+export interface TransitRepresentativePassengerResultMessage {
+  type: 'representativePassengerResult';
+  requestId: string;
+  passenger: RepresentativePassenger | null;
+}
+
 export interface TransitErrorMessage {
   type: 'error';
   message: string;
@@ -131,6 +145,7 @@ export interface TransitErrorMessage {
 export type TransitWorkerToMainMessage = TransitSnapshotMessage
   | TransitSaveStateResultMessage
   | TransitLoadStateResultMessage
+  | TransitRepresentativePassengerResultMessage
   | TransitErrorMessage;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -378,6 +393,29 @@ export function isTransitWorkerSnapshot(value: unknown): value is TransitWorkerS
     && isFiniteNumber(train.lat) && train.lat >= -90 && train.lat <= 90);
 }
 
+function isPassengerLeg(value: unknown): boolean {
+  if (!isRecord(value) || !['walkIn', 'wait', 'ride', 'transfer', 'walkOut'].some((kind) => kind === value.kind)
+    || !isNonNegativeNumber(value.minutes)) return false;
+  return ['lineId', 'fromStationId', 'toStationId'].every((key) => {
+    const field = value[key];
+    return field === undefined || (typeof field === 'string' && field.length > 0 && field.length <= 200);
+  });
+}
+
+function isRepresentativePassenger(value: unknown): value is RepresentativePassenger {
+  return isRecord(value)
+    && typeof value.selectedStationId === 'string' && value.selectedStationId.length > 0 && value.selectedStationId.length <= 200
+    && typeof value.odKey === 'string' && value.odKey.length > 0 && value.odKey.length <= 500
+    && isNonNegativeNumber(value.flow)
+    && typeof value.startStationId === 'string' && value.startStationId.length > 0 && value.startStationId.length <= 200
+    && typeof value.endStationId === 'string' && value.endStationId.length > 0 && value.endStationId.length <= 200
+    && typeof value.pathSignature === 'string' && value.pathSignature.length > 0 && value.pathSignature.length <= 200_000
+    && Array.isArray(value.legs) && value.legs.length > 0 && value.legs.length <= 5_000
+    && value.legs.every(isPassengerLeg)
+    && isNonNegativeNumber(value.doorToDoorMinutes)
+    && (value.alternativeMinutes === null || isNonNegativeNumber(value.alternativeMinutes));
+}
+
 function isLegacySnapshot(value: unknown): value is SimSnapshot {
   if (!isRecord(value) || !isNonNegativeInteger(value.seq) || !isNonNegativeNumber(value.gameTimeMs)
     || !isSeed(value.seed) || !isSeed(value.rngState)
@@ -420,11 +458,19 @@ export function isTransitSaveStateMessage(value: unknown): value is TransitSaveS
   return isRecord(value) && value.type === 'saveState' && isRequestId(value.requestId);
 }
 
+export function isTransitRequestRepresentativePassengerMessage(
+  value: unknown,
+): value is TransitRequestRepresentativePassengerMessage {
+  return isRecord(value) && value.type === 'requestRepresentativePassenger'
+    && isRequestId(value.requestId)
+    && typeof value.stationId === 'string' && value.stationId.length > 0 && value.stationId.length <= 200;
+}
+
 export function isTransitMainToWorkerMessage(value: unknown): value is TransitMainToWorkerMessage {
   return isTransitStartMessage(value) || isTransitSetNetworkMessage(value)
     || isTransitPauseMessage(value) || isTransitResumeMessage(value)
     || isTransitSetSpeedMessage(value) || isTransitLoadStateMessage(value)
-    || isTransitSaveStateMessage(value);
+    || isTransitSaveStateMessage(value) || isTransitRequestRepresentativePassengerMessage(value);
 }
 
 export function isTransitSnapshotMessage(value: unknown): value is TransitSnapshotMessage {
@@ -440,6 +486,14 @@ export function isTransitLoadStateResultMessage(value: unknown): value is Transi
   return isRecord(value) && value.type === 'loadStateResult' && isRequestId(value.requestId) && value.ok === true;
 }
 
+export function isTransitRepresentativePassengerResultMessage(
+  value: unknown,
+): value is TransitRepresentativePassengerResultMessage {
+  return isRecord(value) && value.type === 'representativePassengerResult'
+    && isRequestId(value.requestId)
+    && (value.passenger === null || isRepresentativePassenger(value.passenger));
+}
+
 export function isTransitErrorMessage(value: unknown): value is TransitErrorMessage {
   return isRecord(value) && value.type === 'error' && typeof value.message === 'string'
     && (value.requestId === undefined || isRequestId(value.requestId));
@@ -447,7 +501,8 @@ export function isTransitErrorMessage(value: unknown): value is TransitErrorMess
 
 export function isTransitWorkerToMainMessage(value: unknown): value is TransitWorkerToMainMessage {
   return isTransitSnapshotMessage(value) || isTransitSaveStateResultMessage(value)
-    || isTransitLoadStateResultMessage(value) || isTransitErrorMessage(value);
+    || isTransitLoadStateResultMessage(value) || isTransitRepresentativePassengerResultMessage(value)
+    || isTransitErrorMessage(value);
 }
 
 function isRequestId(value: unknown): value is string {

@@ -105,6 +105,13 @@ export class TransitWorkerRuntime {
       const state: TransitWorkerSaveState = { version: 2, seed: this.seed, transit: this.simulation.serialize() };
       return [{ type: 'saveStateResult', requestId: message.requestId, state }];
     }
+    if (message.type === 'requestRepresentativePassenger') {
+      return [{
+        type: 'representativePassengerResult',
+        requestId: message.requestId,
+        passenger: this.simulation?.representativePassenger(message.stationId) ?? null,
+      }];
+    }
     return this.loadTransitState(message.requestId, message.state);
   }
 
