@@ -83,7 +83,13 @@ export function createPanelController({
       : undefined;
     const loadFactor = lineStats?.periods.find(({ periodId }) =>
       periodId === latestTransitSnapshot?.currentPeriodId)?.maxLoadFactor;
-    panelControllerRef.current?.updateFollowInfo(followDisplay ? { ...followDisplay, loadFactor } : undefined);
+    const followedPassenger = getMapRenderer()?.getFollowPassengerTrip();
+    const stationNames = new Map(networkHistory.network.stations.map(({ id, name }) => [id, name]));
+    panelControllerRef.current?.updateFollowInfo(
+      followDisplay ? { ...followDisplay, loadFactor } : undefined,
+      followedPassenger,
+      stationNames,
+    );
   };
   const saveStateProviders: SaveStateProviders = {
     getNetwork: () => networkHistory.network,
@@ -157,6 +163,24 @@ export function createPanelController({
         }
       },
       followLine: (lineId) => { cityController.followLine(lineId); },
+      followPassenger: (stationId) => {
+        const transitClient = getTransitClient();
+        if (!transitClient) {
+          showStatus('模擬尚未啟動，無法跟隨代表旅客。');
+          return;
+        }
+        void transitClient.requestRepresentativePassenger(stationId).then((trip) => {
+          if (!trip) {
+            showStatus('此站目前沒有代表旅客（尚無經過此站的乘客）。');
+            return;
+          }
+          if (!cityController.followPassenger(trip, transitClient.getStatus().gameTimeMs)) {
+            showStatus('無法跟隨代表旅客。');
+          }
+        }).catch((error: unknown) => {
+          showStatus(error instanceof Error ? error.message : '無法取得代表旅客。');
+        });
+      },
     });
     panelControllerRef.current.element.hidden = !rendererState.current?.isMetroView;
     updatePanels();

@@ -10,7 +10,9 @@ import { MAX_NAME_LENGTH } from '../city/limits';
 import type { FollowTrainInfo } from '../city/follow';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
 import type { TransitSummarySnapshot } from '../sim/transit';
+import type { RepresentativePassenger } from '../sim/transit/representative';
 import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
+import { buildPassengerViewModel, createPassengerView, type PassengerStationNames } from './passenger-view';
 import {
   createSectionFlowChart,
   type SectionFlowByPeriod,
@@ -62,12 +64,17 @@ export interface PanelCallbacks {
   setLineTrains(lineId: string, peakTrains: number, offPeakTrains: number): void;
   setLineCars(lineId: string, cars: number): void;
   followLine(lineId: string): void;
+  followPassenger(stationId: string): void;
 }
 
 export interface SimulationPanels {
   element: HTMLElement;
   update(network: Network, snapshot: TransitSummarySnapshot | undefined, selectedStationId?: string): void;
-  updateFollowInfo(info: FollowTrainInfo | undefined): void;
+  updateFollowInfo(
+    info: FollowTrainInfo | undefined,
+    passenger?: RepresentativePassenger,
+    stationNames?: PassengerStationNames,
+  ): void;
 }
 
 interface PeriodRow {
@@ -329,14 +336,22 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     if (stationId && renameInput.value.trim()) callbacks.renameStation(stationId, renameInput.value);
   });
   stationDetails.append(stationName, stationFacts, sparklineHeading, sparkline, renameForm);
+  const followPassengerButton = element('button', 'source-button', '跟隨代表旅客');
+  followPassengerButton.type = 'button';
+  followPassengerButton.addEventListener('click', () => {
+    const stationId = renameForm.dataset.stationId;
+    if (stationId) callbacks.followPassenger(stationId);
+  });
+  stationDetails.append(followPassengerButton);
   station.content.append(stationPlaceholder, stationDetails);
 
   const routes = makeSection('路線卡');
   const lineCardsContainer = element('div', 'line-cards');
   routes.content.append(lineCardsContainer);
-  const follow = makeSection('跟隨列車');
+  const follow = makeSection('跟隨列車／旅客');
   const followDetails = element('p', 'panel-placeholder');
-  follow.content.append(followDetails);
+  const passengerDetails = element('div', 'passenger-follow-details');
+  follow.content.append(followDetails, passengerDetails);
   follow.section.hidden = true;
   root.append(city.section, station.section, routes.section, follow.section);
   container.append(root);
@@ -402,8 +417,17 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     routes.section.hidden = network.lines.length === 0;
   };
 
-  const updateFollowInfo = (info: FollowTrainInfo | undefined): void => {
-    follow.section.hidden = !info;
+  const updateFollowInfo = (
+    info: FollowTrainInfo | undefined,
+    passenger?: RepresentativePassenger,
+    stationNames: PassengerStationNames = new Map(),
+  ): void => {
+    follow.section.hidden = !info && !passenger;
+    followDetails.hidden = !info;
+    passengerDetails.replaceChildren();
+    if (passenger) {
+      passengerDetails.append(createPassengerView(document, buildPassengerViewModel(passenger, stationNames)));
+    }
     if (!info) {
       followDetails.textContent = '';
       return;

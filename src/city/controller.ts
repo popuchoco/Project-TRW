@@ -15,6 +15,7 @@ import { lineSpacingWarnings, type Network } from './network';
 import { followReducer, type FollowEvent, type FollowState } from './follow';
 import type { TransitModeId } from './modes';
 import { MapRenderer, type NetworkEditorPointer, type NetworkSelection } from '../render/MapRenderer';
+import type { RepresentativePassenger } from '../sim/transit/representative';
 
 export type EditorTool = 'select' | 'place' | 'line' | 'insert';
 
@@ -62,6 +63,7 @@ export interface CityController {
   executeNetworkCommand(command: NetworkCommand, selection?: NetworkSelection): Network;
   selectNetworkItem(selection?: NetworkSelection): void;
   followLine(lineId: string): boolean;
+  followPassenger(trip: RepresentativePassenger, startGameTime: number): boolean;
   bindControls(): void;
   attachRenderer(
     createdRenderer: MapRenderer,
@@ -124,6 +126,17 @@ export function createCityController({
     const followedLineId = followState.kind === 'followingTrain' ? followState.lineId : undefined;
     if (followedLineId && !network.lines.some(({ id }) => id === followedLineId)) {
       transitionFollow({ type: 'lineDeleted', lineId: followedLineId });
+    }
+    if (followState.kind === 'followingPassenger') {
+      const trip = followState.trip;
+      const tripStationIds = [trip.selectedStationId, trip.startStationId, trip.endStationId];
+      for (const leg of trip.legs) {
+        if (leg.fromStationId) tripStationIds.push(leg.fromStationId);
+        if (leg.toStationId) tripStationIds.push(leg.toStationId);
+      }
+      const deletedStationId = tripStationIds.find((stationId) =>
+        !network.stations.some((station) => station.id === stationId));
+      if (deletedStationId) transitionFollow({ type: 'stationDeleted', stationId: deletedStationId });
     }
     if (selectedNetworkItem?.type === 'station'
       && !network.stations.some(({ id }) => id === selectedNetworkItem?.id)) selectedNetworkItem = undefined;
@@ -198,6 +211,13 @@ export function createCityController({
     return true;
   };
 
+  const followPassenger = (trip: RepresentativePassenger, startGameTime: number): boolean => {
+    if (!Number.isFinite(startGameTime)
+      || !networkHistory.network.stations.some(({ id }) => id === trip.selectedStationId)) return false;
+    transitionFollow({ type: 'startPassenger', trip, startGameTime });
+    return true;
+  };
+
   const attachRenderer = (
     createdRenderer: MapRenderer,
     hasVillageGeometry: () => boolean,
@@ -208,6 +228,7 @@ export function createCityController({
       start: (trainId, lineId) => transitionFollow({ type: 'start', trainId, lineId }),
       drag: () => transitionFollow({ type: 'drag' }),
       trainGone: (trainId) => transitionFollow({ type: 'trainGone', trainId }),
+      tripFinished: () => transitionFollow({ type: 'tripFinished' }),
     });
     const showAllNorthNorthButton = document.createElement('button');
     showAllNorthNorthButton.type = 'button';
@@ -389,6 +410,7 @@ export function createCityController({
     executeNetworkCommand,
     selectNetworkItem,
     followLine,
+    followPassenger,
     bindControls,
     attachRenderer,
   };

@@ -18,6 +18,7 @@ interface TimedSnapshot {
 }
 
 export type SimClientSnapshot = SimSnapshot | TransitWorkerSnapshot;
+export type InterpolatedTrainPositionFrame = TransitWorkerSnapshot['trains'] & { readonly gameTimeMs: number };
 
 export interface SimStatus {
   seq: number;
@@ -198,12 +199,26 @@ export class SimClient {
     return interpolateSnapshots(previous, latest, this.renderTimeAt(now));
   }
 
-  getInterpolatedTrainPositions(now = this.now()): TransitWorkerSnapshot['trains'] {
-    if (this.protocol !== 'transit') return [];
+  getInterpolatedTrainPositions(now = this.now()): InterpolatedTrainPositionFrame {
+    const gameTimeMs = this.renderTimeAt(now);
+    if (this.protocol !== 'transit') {
+      const positions: TransitWorkerSnapshot['trains'] = [];
+      Object.defineProperty(positions, 'gameTimeMs', { value: gameTimeMs, enumerable: false });
+      return positions as InterpolatedTrainPositionFrame;
+    }
     const latest = this.latestTransit()?.snapshot;
-    if (!latest) return [];
-    const previous = this.transitSnapshots.length > 1 ? this.transitSnapshots[0]!.snapshot : latest;
-    return interpolateTrainSnapshots(previous, latest, this.renderTimeAt(now));
+    const positions = latest
+      ? interpolateTrainSnapshots(
+        this.transitSnapshots.length > 1 ? this.transitSnapshots[0]!.snapshot : latest,
+        latest,
+        gameTimeMs,
+      )
+      : [];
+    Object.defineProperty(positions, 'gameTimeMs', {
+      value: gameTimeMs,
+      enumerable: false,
+    });
+    return positions as InterpolatedTrainPositionFrame;
   }
 
   destroy(): void {

@@ -18,7 +18,12 @@ import { separatePolygonRings } from './polygon-rings';
 import { isRenderFrameActive } from './RenderScheduler';
 import { LABEL_FONT_SIZES, LINE_STYLES, RENDER_PALETTE, STATION_MARKERS } from './tokens';
 import { createEmptyNetwork, haversineKm, isTransferStation, type Network } from '../city/network';
-import { followCameraTarget, type FollowState, type FollowTrainDisplay } from '../city/follow';
+import {
+  followCameraTarget,
+  passengerPositionAt,
+  type FollowState,
+  type FollowTrainDisplay,
+} from '../city/follow';
 import { compareText } from '../sim/compare';
 import {
   bboxForTowns,
@@ -35,6 +40,7 @@ import {
   STATION_LABEL_GRID_CELL,
   STATION_LABEL_STATION_RADIUS,
 } from './labels';
+import type { RepresentativePassenger } from '../sim/transit/representative';
 
 type CountyLayers = Map<string, Container>;
 type InsetId = 'diaoyutai' | 'dongsha' | 'nansha';
@@ -65,6 +71,7 @@ interface FollowHandlers {
   start(trainId: string, lineId: string): void;
   drag(): void;
   trainGone(trainId: string): void;
+  tripFinished(): void;
 }
 
 // 可調：點選列車標記的命中半徑。
@@ -230,7 +237,16 @@ export class MapRenderer {
     .fill(0x167a9a)
     .circle(0, 0, 4.5)
     .stroke({ color: 0xffffff, width: 1.4 });
+  private readonly passengerMarker = new Graphics()
+    .circle(0, 0, 9)
+    .fill({ color: 0xffffff, alpha: 0.96 })
+    .circle(0, 0, 6)
+    .fill(0xd57435)
+    .circle(0, 0, 2)
+    .fill(0xffffff);
   private simulationPosition?: [number, number];
+  private passengerPosition?: [number, number];
+  private currentGameTimeMs?: number;
   private readonly layers = new Map<LodId, CountyLayers>();
   private readonly featureSets = new Map<LodId, Map<string, TownFeature[]>>();
   private readonly lod3Features = new Map<string, TownFeature[]>();
@@ -313,7 +329,8 @@ export class MapRenderer {
       this.simulationRoot,
       this.insetsRoot,
     );
-    this.simulationRoot.addChild(this.simulationMarker);
+    this.simulationRoot.addChild(this.simulationMarker, this.passengerMarker);
+    this.passengerMarker.visible = false;
     this.setLodFeatures('lod0', initialFeatures);
     this.installPointerHandlers();
     window.addEventListener('resize', this.onResize);
@@ -338,6 +355,8 @@ export class MapRenderer {
 
   get hasVisibleTrains(): boolean {
     if (!this.metroViewActive) return false;
+    // A followed passenger also needs frames while the simulation is running.
+    if (this.followState.kind === 'followingPassenger') return true;
     return this.trainPositions.some((train) => {
       const point = this.camera.lonLatToScreen([train.lon, train.lat]);
       return point.x >= 0 && point.x <= this.camera.width && point.y >= 0 && point.y <= this.camera.height;
@@ -385,7 +404,10 @@ export class MapRenderer {
     this.requestRender();
   }
 
-  setTrainPositions(trains: readonly TrainPosition[]): void {
+  setTrainPositions(trains: readonly TrainPosition[], gameTimeMs?: number): void {
+    const frameGameTime = gameTimeMs
+      ?? (trains as readonly TrainPosition[] & { readonly gameTimeMs?: number }).gameTimeMs;
+    if (frameGameTime !== undefined && Number.isFinite(frameGameTime)) this.currentGameTimeMs = frameGameTime;
     const hadVisibleTrains = this.hasVisibleTrains;
     const followed = this.followState;
     const previousFollowedTrain = followed.kind === 'followingTrain'
@@ -431,6 +453,7 @@ export class MapRenderer {
         this.updateCameraDisplay();
       }
     }
+    if (isRenderFrameActive()) this.updatePassengerFollowFrame();
   }
 
   setFollowState(state: FollowState): void {
@@ -440,6 +463,7 @@ export class MapRenderer {
       this.trainDirections.clear();
     }
     this.followState = state;
+    this.passengerMarker.visible = state.kind === 'followingPassenger' && this.metroViewActive;
   }
 
   setFollowHandlers(handlers?: FollowHandlers): void {
@@ -454,7 +478,7 @@ export class MapRenderer {
 
   getFollowDisplayInfo(): FollowTrainDisplay | undefined {
     const followState = this.followState;
-    if (followState.kind === 'idle') return undefined;
+    if (followState.kind !== 'followingTrain') return undefined;
     const train = this.trainPositions.find(({ id, lineId }) =>
       id === followState.trainId && lineId === followState.lineId);
     const line = this.network.lines.find(({ id }) => id === followState.lineId);
@@ -474,6 +498,10 @@ export class MapRenderer {
       direction: direction > 0 ? '順向' : '逆向',
       nextStationName: nextStation.name,
     };
+  }
+
+  getFollowPassengerTrip(): RepresentativePassenger | undefined {
+    return this.followState.kind === 'followingPassenger' ? this.followState.trip : undefined;
   }
 
   setEditorPointerHandler(handler?: NetworkEditorPointerHandler): void {
@@ -900,6 +928,7 @@ export class MapRenderer {
     this.drawStationMarkers();
     this.drawTrainMarkers();
     this.positionSimulationMarker();
+    this.positionPassengerMarker();
     this.insetsRoot.visible = !this.metroViewActive;
     this.onViewChange(this.desiredLod, this.visibleCountyCodes, this.camera.zoom);
     this.requestRender();
@@ -909,6 +938,38 @@ export class MapRenderer {
     if (!this.simulationPosition) return;
     const position = this.camera.lonLatToScreen(this.simulationPosition);
     this.simulationMarker.position.set(position.x, position.y);
+  }
+
+  private positionPassengerMarker(): void {
+    const following = this.followState.kind === 'followingPassenger' && this.metroViewActive;
+    this.passengerMarker.visible = following && this.passengerPosition !== undefined;
+    if (!following || !this.passengerPosition) return;
+    const position = this.camera.lonLatToScreen(this.passengerPosition);
+    this.passengerMarker.position.set(position.x, position.y);
+  }
+
+  private updatePassengerFollowFrame(): void {
+    const following = this.followState;
+    if (following.kind !== 'followingPassenger' || !this.metroViewActive || this.currentGameTimeMs === undefined) {
+      this.passengerMarker.visible = false;
+      return;
+    }
+    const stationCoords = new Map(this.network.stations.map((station) => [
+      station.id,
+      { lon: station.lon, lat: station.lat },
+    ]));
+    const elapsedGameMinutes = (this.currentGameTimeMs - following.startGameTime) / 60_000;
+    const position = passengerPositionAt(following.trip, stationCoords, elapsedGameMinutes);
+    if (position) {
+      this.passengerPosition = [position.lon, position.lat];
+      this.positionPassengerMarker();
+      const center = project([position.lon, position.lat]);
+      if (center.x !== this.camera.center.x || center.y !== this.camera.center.y) {
+        this.camera.center = center;
+        this.updateCameraDisplay();
+      }
+    }
+    if (elapsedGameMinutes >= following.trip.doorToDoorMinutes) this.followHandlers?.tripFinished();
   }
 
   private refreshVisibility(): void {

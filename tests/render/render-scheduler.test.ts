@@ -148,6 +148,40 @@ describe('RenderScheduler', () => {
     expect(driver.pendingCount()).toBe(0);
   });
 
+  it('does not render over five simulated seconds while paused with a representative passenger followed', () => {
+    const driver = createFrameDriver();
+    let renderCount = 0;
+    const scheduler = new RenderScheduler({
+      render: () => { renderCount += 1; },
+      requestAnimationFrame: driver.requestAnimationFrame,
+      cancelAnimationFrame: driver.cancelAnimationFrame,
+    });
+    const following: FollowState = followReducer({ kind: 'idle' }, {
+      type: 'startPassenger',
+      trip: {
+        selectedStationId: 's1',
+        odKey: 's1>s2',
+        flow: 1,
+        startStationId: 's1',
+        endStationId: 's2',
+        pathSignature: 'l1:s1>s2',
+        legs: [{ kind: 'ride', minutes: 5, lineId: 'l1', fromStationId: 's1', toStationId: 's2' }],
+        doorToDoorMinutes: 5,
+        alternativeMinutes: null,
+      },
+      startGameTime: 0,
+    });
+    // MapRenderer reports visible activity while a passenger is followed; paused must still win.
+    scheduler.setSimulationActivity(false, true);
+
+    for (let timestamp = 0; timestamp <= 5_000; timestamp += 100) driver.frame(timestamp);
+
+    expect(following.kind).toBe('followingPassenger');
+    expect(renderCount).toBe(0);
+    expect(scheduler.renderCount).toBe(0);
+    expect(driver.pendingCount()).toBe(0);
+  });
+
   it('reports renders in the trailing second', () => {
     const driver = createFrameDriver();
     let now = 100;
