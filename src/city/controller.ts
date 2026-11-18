@@ -243,12 +243,12 @@ export function createCityController({
       trainGone: (trainId) => transitionFollow({ type: 'trainGone', trainId }),
       tripFinished: () => transitionFollow({ type: 'tripFinished' }),
     });
-    const showAllNorthNorthButton = document.createElement('button');
-    showAllNorthNorthButton.type = 'button';
-    showAllNorthNorthButton.className = ui.returnIslandButton.className;
-    showAllNorthNorthButton.textContent = '顯示全北北';
-    ui.returnIslandButton.parentElement?.insertBefore(showAllNorthNorthButton, ui.returnIslandButton);
-    showAllNorthNorthButton.addEventListener('click', () => createdRenderer.showAllNorthNorth());
+    const showAllRegionButton = document.createElement('button');
+    showAllRegionButton.type = 'button';
+    showAllRegionButton.className = ui.returnIslandButton.className;
+    showAllRegionButton.textContent = `顯示全${createdRenderer.region.name}`;
+    ui.returnIslandButton.parentElement?.insertBefore(showAllRegionButton, ui.returnIslandButton);
+    showAllRegionButton.addEventListener('click', () => createdRenderer.showAllRegion());
     ui.enterMetroButton.addEventListener('click', () => createdRenderer.enterMetroView());
     ui.returnIslandButton.addEventListener('click', () => createdRenderer.returnToIslandView());
 

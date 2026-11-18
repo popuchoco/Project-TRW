@@ -30,10 +30,10 @@ import { compareText } from '../sim/compare';
 import {
   bboxForTowns,
   chooseInitialMetroBounds,
-  TAIPEI_CORE_TOWNCODES,
   villageBoundsFromGeometry,
   type SavedCameraView,
 } from '../city/metro-focus';
+import { REGIONS, regionIncludesCounty, type RegionDefinition } from '../city/regions';
 import type { TrainPosition } from '../sim/protocol';
 import {
   placeLabels,
@@ -259,8 +259,9 @@ export class MapRenderer {
   private readonly stationLabelById = new Map<string, Text>();
   private readonly townBounds: QuadTree<DataManifest['towns'][number]>;
   private readonly insetFeatures: TownFeature[];
-  private readonly northNorthBounds: BBox;
-  private readonly coreTownBounds: BBox;
+  private regionDefinition: RegionDefinition = REGIONS.northNorth;
+  private regionBounds: BBox;
+  private coreTownBounds: BBox;
   private insetLayouts = new Map<InsetId, InsetLayout>();
   private selectedCode?: string;
   private villageGeometry?: VillageGeometryData;
@@ -307,8 +308,8 @@ export class MapRenderer {
   ) {
     this.insetFeatures = insetFeatures;
     this.camera = new MapCamera(app.screen.width, app.screen.height, this.mainBounds());
-    this.northNorthBounds = this.boundsForNorthNorth();
-    this.coreTownBounds = this.boundsForTownCodes(TAIPEI_CORE_TOWNCODES) ?? this.northNorthBounds;
+    this.regionBounds = this.boundsForRegion(this.regionDefinition);
+    this.coreTownBounds = this.boundsForTownCodes(this.regionDefinition.coreTownCodes) ?? this.regionBounds;
     this.townBounds = new QuadTree(manifest.towns, (town) => town.bbox);
     this.villagesRoot.visible = false;
     this.networkRoot.visible = false;
@@ -336,6 +337,20 @@ export class MapRenderer {
 
   get currentLod(): LodId {
     return this.desiredLod;
+  }
+
+  get region(): RegionDefinition {
+    return this.regionDefinition;
+  }
+
+  setRegion(region: RegionDefinition): void {
+    this.regionDefinition = region;
+    this.regionBounds = this.boundsForRegion(region);
+    this.coreTownBounds = this.boundsForTownCodes(region.coreTownCodes) ?? this.regionBounds;
+    this.coreVillageBounds = this.villageGeometry
+      ? bboxForTowns(villageBoundsFromGeometry(this.villageGeometry), region.coreTownCodes)
+      : undefined;
+    if (this.metroViewActive) this.focusBounds(this.allVillageBounds ?? this.regionBounds);
   }
 
   get countiesInView(): string[] {
@@ -638,7 +653,7 @@ export class MapRenderer {
     const initialBounds = chooseInitialMetroBounds({
       savedCamera: options.savedCamera,
       core: this.coreVillageBounds ?? this.coreTownBounds,
-      all: this.allVillageBounds ?? this.northNorthBounds,
+      all: this.allVillageBounds ?? this.regionBounds,
     });
     this.metroInitialFocusPending = Boolean(initialBounds && !this.villageGeometry);
     if (initialBounds) this.focusBounds(initialBounds);
@@ -647,9 +662,13 @@ export class MapRenderer {
     this.onMetroViewChange(true);
   }
 
-  showAllNorthNorth(): void {
+  showAllRegion(): void {
     this.metroInitialFocusPending = false;
-    this.focusBounds(this.allVillageBounds ?? this.northNorthBounds);
+    this.focusBounds(this.allVillageBounds ?? this.regionBounds);
+  }
+
+  showAllNorthNorth(): void {
+    this.showAllRegion();
   }
 
   returnToIslandView(): void {
@@ -674,7 +693,7 @@ export class MapRenderer {
   setVillageGeometry(geometry: VillageGeometryData): number[] {
     this.villageGeometry = geometry;
     const boundsRecords = villageBoundsFromGeometry(geometry);
-    this.coreVillageBounds = bboxForTowns(boundsRecords, TAIPEI_CORE_TOWNCODES);
+    this.coreVillageBounds = bboxForTowns(boundsRecords, this.regionDefinition.coreTownCodes);
     this.allVillageBounds = bboxForTowns(boundsRecords, boundsRecords.map(({ TOWNCODE }) => TOWNCODE));
     this.villageLookup = new VillageGeometryLookup(geometry);
     const densities = geometry.villages
@@ -724,8 +743,8 @@ export class MapRenderer {
     );
   }
 
-  private boundsForNorthNorth(): BBox {
-    const towns = this.manifest.towns.filter((town) => town.countyCode === '63000' || town.countyCode === '65000');
+  private boundsForRegion(region: RegionDefinition): BBox {
+    const towns = this.manifest.towns.filter((town) => regionIncludesCounty(region, town.countyCode));
     if (towns.length === 0) return this.mainBounds();
     return towns.reduce<BBox>(
       (bounds, town) => [
@@ -1385,7 +1404,7 @@ export class MapRenderer {
     }
     const [lon, lat] = this.camera.screenToLonLat(point);
     const feature = this.hitTown(lon, lat);
-    if (feature && (feature.properties.COUNTYCODE === '63000' || feature.properties.COUNTYCODE === '65000')) {
+    if (feature && regionIncludesCounty(this.regionDefinition, feature.properties.COUNTYCODE)) {
       this.enterMetroView();
     } else if (feature) {
       this.select(feature);
@@ -1422,7 +1441,7 @@ export class MapRenderer {
     this.camera.resize(this.app.screen.width, this.app.screen.height);
     this.rebuildInsets();
     if (this.metroViewActive) {
-      this.focusBounds(this.allVillageBounds ?? this.northNorthBounds);
+      this.focusBounds(this.allVillageBounds ?? this.regionBounds);
       return;
     }
     this.updateCameraDisplay();
