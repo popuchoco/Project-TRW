@@ -133,7 +133,7 @@ export interface LineDailyStats {
   offPeakTrains: number;
   spacingWarnings: ReturnType<typeof lineSpacingWarnings>;
   periods: LinePeriodStats[];
-  /** Avoid an on-demand round trip; 20 lines × 20 stations adds about 300 KB serialized to the summary. */
+  /** Flow data stays inside the worker and is sent through lineFlows, not in tick snapshots or saves. */
   sectionFlow: Record<SimulationPeriodId, LineSectionFlowPeriod>;
   /** Station totals support checking that directional section loads conserve riders. */
   stationFlows: Record<SimulationPeriodId, LineStationFlowPeriod>;
@@ -158,6 +158,13 @@ export interface TransitSummarySnapshot {
   lines: LineDailyStats[];
 }
 
+type TransitSnapshotLineState = Omit<LineDailyStats, 'sectionFlow' | 'stationFlows'>
+  & Partial<Pick<LineDailyStats, 'sectionFlow' | 'stationFlows'>>;
+
+type TransitSnapshotState = Omit<TransitSummarySnapshot, 'lines'> & {
+  lines: TransitSnapshotLineState[];
+};
+
 export interface TransitSimSerializedState {
   version: 1;
   villageFingerprint: string;
@@ -165,7 +172,7 @@ export interface TransitSimSerializedState {
   gameTimeMs: number;
   pathRecomputeCount: number;
   actualAttempts: Array<{ key: string; trips: number }>;
-  snapshot: TransitSummarySnapshot;
+  snapshot: TransitSnapshotState;
 }
 
 interface EquilibriumRoute {
@@ -326,7 +333,7 @@ const SERVICE_PERIOD_GROUPS: ReadonlyArray<{
   { representative: 'offPeak', periods: ['offPeak', 'night'] },
 ];
 
-function cloneSnapshot(snapshot: TransitSummarySnapshot): TransitSummarySnapshot {
+function cloneSnapshot(snapshot: TransitSnapshotState): TransitSummarySnapshot {
   return {
     ...snapshot,
     city: {
@@ -358,7 +365,7 @@ function cloneSnapshot(snapshot: TransitSummarySnapshot): TransitSummarySnapshot
   };
 }
 
-function cloneSectionFlow(line: LineDailyStats): Record<SimulationPeriodId, LineSectionFlowPeriod> {
+function cloneSectionFlow(line: TransitSnapshotLineState): Record<SimulationPeriodId, LineSectionFlowPeriod> {
   const fallbackFor = (periodId: SimulationPeriodId): LineSectionFlowPeriod => {
     const capacity = line.periods.find((period) => period.periodId === periodId)?.periodCapacity ?? 0;
     const emptySegment = (): SegmentFlow => ({ load: 0, capacity, loadFactor: 0 });
@@ -377,7 +384,7 @@ function cloneSectionFlow(line: LineDailyStats): Record<SimulationPeriodId, Line
   })) as Record<SimulationPeriodId, LineSectionFlowPeriod>;
 }
 
-function cloneStationFlows(line: LineDailyStats): Record<SimulationPeriodId, LineStationFlowPeriod> {
+function cloneStationFlows(line: TransitSnapshotLineState): Record<SimulationPeriodId, LineStationFlowPeriod> {
   const emptyDirection = () => ({
     boardings: Array<number>(Math.max(0, line.stationCount)).fill(0),
     alightings: Array<number>(Math.max(0, line.stationCount)).fill(0),
@@ -396,6 +403,18 @@ function cloneStationFlows(line: LineDailyStats): Record<SimulationPeriodId, Lin
       },
     }];
   })) as Record<SimulationPeriodId, LineStationFlowPeriod>;
+}
+
+function snapshotWithoutFlows(snapshot: TransitSummarySnapshot): TransitSnapshotState {
+  return {
+    ...snapshot,
+    lines: snapshot.lines.map((line) => {
+      const savedLine: TransitSnapshotLineState = { ...line };
+      delete savedLine.sectionFlow;
+      delete savedLine.stationFlows;
+      return savedLine;
+    }),
+  };
 }
 
 function makeEmptySnapshot(stations: readonly Station[], pairCount: number): TransitSummarySnapshot {
@@ -543,6 +562,7 @@ export class TransitSim {
   }
 
   serialize(): TransitSimSerializedState {
+    const snapshot = this.snapshot();
     return {
       version: 1,
       villageFingerprint: this.villageFingerprint,
@@ -552,10 +572,11 @@ export class TransitSim {
       actualAttempts: [...this.actualAttempts.entries()]
         .sort(([a], [b]) => compareText(a, b))
         .map(([key, trips]) => ({ key, trips })),
-      snapshot: this.snapshot(),
+      snapshot: snapshotWithoutFlows(snapshot),
     };
   }
 
+  /** Loading is followed by a worker refresh, which recalculates the line flows. */
   static restore(
     villages: readonly VillageDemandPoint[],
     state: TransitSimSerializedState,
