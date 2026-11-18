@@ -346,7 +346,7 @@ export function createPanelController({
     const dataBase = new URL(import.meta.env.BASE_URL, document.baseURI);
     const regionId = getRegion();
     const villageSource = regionId === DEFAULT_REGION_ID
-      ? { kind: 'url' as const, url: REGIONS.northNorth.villageAssets[0]!.attributes }
+      ? { kind: 'url' as const, url: new URL(REGIONS.northNorth.villageAssets[0]!.attributes, dataBase).href }
       : {
         kind: 'urls' as const,
         urls: REGIONS[regionId].villageAssets.map(({ attributes }) => new URL(attributes, dataBase).href),
