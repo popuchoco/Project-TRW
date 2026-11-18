@@ -18,6 +18,7 @@ export function createUi(mount: HTMLElement): {
   simSpeedSelect: HTMLSelectElement;
   enterMetroButton: HTMLButtonElement;
   returnIslandButton: HTMLButtonElement;
+  extendRegionButton: HTMLButtonElement;
   editorToolbar: HTMLElement;
   editorToolButtons: Map<EditorTool, HTMLButtonElement>;
   lineModeSelect: HTMLSelectElement;
@@ -95,8 +96,12 @@ export function createUi(mount: HTMLElement): {
   returnIslandButton.type = 'button';
   returnIslandButton.dataset.action = 'return-island-view';
   returnIslandButton.hidden = true;
+  const extendRegionButton = makeElement('button', 'source-button', '延伸到桃園');
+  extendRegionButton.type = 'button';
+  extendRegionButton.dataset.action = 'extend-region';
   toolbar.insertBefore(enterMetroButton, sources);
   toolbar.insertBefore(returnIslandButton, sources);
+  toolbar.insertBefore(extendRegionButton, sources);
 
   const editorToolbar = makeElement('section', 'network-editor-toolbar');
   editorToolbar.hidden = true;
@@ -181,6 +186,7 @@ export function createUi(mount: HTMLElement): {
     simSpeedSelect,
     enterMetroButton,
     returnIslandButton,
+    extendRegionButton,
     editorToolbar,
     editorToolButtons,
     lineModeSelect,
