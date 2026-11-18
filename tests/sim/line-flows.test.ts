@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyNetwork, type Network } from '../../src/city/network';
 import { TransitWorkerRuntime, type WorkerRuntimeOutput } from '../../src/sim/worker-runtime';
-import type { LineFlowsMessage, TransitWorkerSaveState, VillageSource } from '../../src/sim/protocol';
+import type { LineFlowsMessage, TransitSnapshotMessage, TransitWorkerSaveState, VillageSource } from '../../src/sim/protocol';
 
 const villages: VillageSource = { kind: 'data', villages: [] };
 
@@ -28,6 +28,17 @@ function saveState(outputs: WorkerRuntimeOutput[]): TransitWorkerSaveState {
 }
 
 describe('worker line-flow messages', () => {
+  it('omits line flows from tick snapshots', async () => {
+    const runtime = new TransitWorkerRuntime();
+    const outputs = await runtime.handle({ type: 'start', seed: 1, villages, network, paused: false });
+    outputs.push(...runtime.advanceTick(), ...runtime.advanceTick(), ...runtime.advanceTick());
+
+    const snapshots = outputs.filter((message): message is TransitSnapshotMessage => message.type === 'snapshot');
+    expect(snapshots.length).toBeGreaterThan(0);
+    expect(snapshots.every(({ snapshot }) => snapshot.lines.length === 1
+      && snapshot.lines.every((line) => !('sectionFlow' in line) && !('stationFlows' in line)))).toBe(true);
+  });
+
   it('sends once on period and day changes, with no repeats on ticks within a period', async () => {
     const runtime = new TransitWorkerRuntime();
     const started = await runtime.handle({ type: 'start', seed: 1, villages, network: createEmptyNetwork(), paused: false });
