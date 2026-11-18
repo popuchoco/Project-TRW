@@ -65,6 +65,8 @@ export interface CityController {
   selectNetworkItem(selection?: NetworkSelection): void;
   followLine(lineId: string): boolean;
   followPassenger(trip: RepresentativePassenger, startGameTime: number): boolean;
+  replayPassenger(startGameTime: number): boolean;
+  closePassengerFollow(): void;
   bindControls(): void;
   attachRenderer(
     createdRenderer: MapRenderer,
@@ -220,6 +222,14 @@ export function createCityController({
     transitionFollow({ type: 'startPassenger', trip, startGameTime });
     return true;
   };
+
+  const replayPassenger = (startGameTime: number): boolean => {
+    if (followState.kind !== 'passengerTripEnded' || !Number.isFinite(startGameTime)) return false;
+    transitionFollow({ type: 'replay', startGameTime });
+    return true;
+  };
+
+  const closePassengerFollow = (): void => transitionFollow({ type: 'close' });
 
   const attachRenderer = (
     createdRenderer: MapRenderer,
@@ -415,6 +425,8 @@ export function createCityController({
     selectNetworkItem,
     followLine,
     followPassenger,
+    replayPassenger,
+    closePassengerFollow,
     bindControls,
     attachRenderer,
   };

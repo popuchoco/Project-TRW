@@ -8,11 +8,21 @@ export interface LineFlowsCache {
   clear(): void;
 }
 
+export function planLineFlowRequests(
+  cache: LineFlowsCache,
+  lineIds: readonly string[],
+  inFlight: ReadonlySet<string>,
+): string[] {
+  if (cache.networkVersion() === undefined) return [];
+  return lineIds.filter((lineId) => !cache.get(lineId) && !inFlight.has(lineId));
+}
+
 export function createLineFlowsCache(): LineFlowsCache {
   let version: number | undefined;
   const lines = new Map<string, LineFlowsData>();
 
   return {
+    // Unsolicited messages replace the full cache; requested replies merge by line.
     apply(message) {
       if (version !== undefined && message.networkVersion < version) return false;
 
@@ -21,14 +31,14 @@ export function createLineFlowsCache(): LineFlowsCache {
         version = message.networkVersion;
       }
 
-      // Single-line replies contain one item; full replies contain all lines (or none).
-      if (message.lines.length === 1) {
-        const line = message.lines[0];
-        if (line) lines.set(line.lineId, line);
-      } else {
+      if (message.requestId === undefined) {
         lines.clear();
         for (const line of message.lines) lines.set(line.lineId, line);
+        return true;
       }
+
+      if (message.lines.length === 0) return false;
+      for (const line of message.lines) lines.set(line.lineId, line);
       return true;
     },
     get(lineId) {

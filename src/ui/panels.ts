@@ -9,7 +9,7 @@ import {
 import { MAX_NAME_LENGTH } from '../city/limits';
 import type { FollowTrainInfo } from '../city/follow';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
-import type { TransitSummarySnapshot } from '../sim/transit';
+import type { TransitWireSummary } from '../sim/protocol';
 import type { LineFlowsData } from '../sim/transit/TransitSim';
 import type { RepresentativePassenger } from '../sim/transit/representative';
 import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
@@ -71,13 +71,16 @@ export interface PanelCallbacks {
   setLineCars(lineId: string, cars: number): void;
   followLine(lineId: string): void;
   followPassenger(stationId: string): void;
+  replayPassenger(): void;
+  followAnotherPassenger(): void;
+  closePassengerFollow(): void;
 }
 
 export interface SimulationPanels {
   element: HTMLElement;
   update(
     network: Network,
-    snapshot: TransitSummarySnapshot | undefined,
+    snapshot: TransitWireSummary | undefined,
     selectedStationId?: string,
     getLineFlows?: (lineId: string) => LineFlowsData | undefined,
   ): void;
@@ -86,6 +89,7 @@ export interface SimulationPanels {
     passenger?: RepresentativePassenger,
     stationNames?: PassengerStationNames,
     lineNames?: PassengerLineNames,
+    tripEnded?: boolean,
   ): void;
 }
 
@@ -273,7 +277,7 @@ function updateLineCard(
   card: LineCard,
   line: Line,
   network: Network,
-  snapshot: TransitSummarySnapshot | undefined,
+  snapshot: TransitWireSummary | undefined,
   getLineFlows?: (lineId: string) => LineFlowsData | undefined,
 ): void {
   const modeDefinition = TRANSIT_MODES[line.mode];
@@ -304,8 +308,7 @@ function updateLineCard(
     ? totalOperatingCost
     : 0)}`;
   card.qualityPanel.update(lineStats?.quality ?? null, lineStats?.quality?.metrics ?? null);
-  // Older saved snapshots may lack section flow; the chart then shows its empty state.
-  const sectionFlow = sectionFlowFromSnapshot(getLineFlows?.(line.id)?.sectionFlow ?? lineStats?.sectionFlow);
+  const sectionFlow = sectionFlowFromSnapshot(getLineFlows?.(line.id)?.sectionFlow);
   const stationNames = line.stationIds.map((stationId) => network.stations.find(({ id }) => id === stationId)?.name ?? stationId);
   card.sectionFlowChart.update(sectionFlow, stationNames);
 }
@@ -369,7 +372,18 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const follow = makeSection('跟隨列車／旅客');
   const followDetails = element('p', 'panel-placeholder');
   const passengerDetails = element('div', 'passenger-follow-details');
-  follow.content.append(followDetails, passengerDetails);
+  const followActions = element('div', 'passenger-follow-actions');
+  const replayPassengerButton = element('button', 'source-button', '重播');
+  replayPassengerButton.type = 'button';
+  replayPassengerButton.addEventListener('click', callbacks.replayPassenger);
+  const followAnotherPassengerButton = element('button', 'source-button', '選另一位');
+  followAnotherPassengerButton.type = 'button';
+  followAnotherPassengerButton.addEventListener('click', callbacks.followAnotherPassenger);
+  const closePassengerFollowButton = element('button', 'source-button', '關閉');
+  closePassengerFollowButton.type = 'button';
+  closePassengerFollowButton.addEventListener('click', callbacks.closePassengerFollow);
+  followActions.append(replayPassengerButton, followAnotherPassengerButton, closePassengerFollowButton);
+  follow.content.append(followDetails, passengerDetails, followActions);
   follow.section.hidden = true;
   root.append(city.section, station.section, routes.section, follow.section);
   container.append(root);
@@ -377,7 +391,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const lineCards = new Map<string, LineCard>();
   const update = (
     network: Network,
-    snapshot: TransitSummarySnapshot | undefined,
+    snapshot: TransitWireSummary | undefined,
     selectedStationId?: string,
     getLineFlows?: (lineId: string) => LineFlowsData | undefined,
   ): void => {
@@ -445,9 +459,13 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     passenger?: RepresentativePassenger,
     stationNames: PassengerStationNames = new Map(),
     lineNames: PassengerLineNames = new Map(),
+    tripEnded = false,
   ): void => {
     follow.section.hidden = !info && !passenger;
-    followDetails.hidden = !info;
+    followDetails.hidden = !info && !(passenger && tripEnded);
+    replayPassengerButton.hidden = !passenger || !tripEnded;
+    followAnotherPassengerButton.hidden = !passenger || !tripEnded;
+    closePassengerFollowButton.hidden = !info && !passenger;
     passengerDetails.replaceChildren();
     if (passenger) {
       passengerDetails.append(createPassengerView(
@@ -456,7 +474,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
       ));
     }
     if (!info) {
-      followDetails.textContent = '';
+      followDetails.textContent = passenger && tripEnded ? '行程已結束' : '';
       return;
     }
     const loadFactor = info.loadFactor !== undefined && Number.isFinite(info.loadFactor)

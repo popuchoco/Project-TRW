@@ -143,6 +143,12 @@ const saveState: TransitWorkerSaveState = {
 
 const transitSnapshot: TransitWorkerSnapshot = {
   ...summary,
+  lines: summary.lines.map((line) => {
+    const wireLine = { ...line };
+    Reflect.deleteProperty(wireLine, 'sectionFlow');
+    Reflect.deleteProperty(wireLine, 'stationFlows');
+    return wireLine;
+  }),
   seq: 0,
   seed: 17,
   trains: [{ id: 'l1-0', lineId: 'l1', lon: 121.5, lat: 25 }],
@@ -414,39 +420,7 @@ describe('transit worker protocol guards', () => {
     })).toBe(false);
     expect(isTransitWorkerSnapshot({
       ...transitSnapshot,
-      lines: [{
-        ...transitSnapshot.lines[0]!,
-        sectionFlow: {
-          ...transitSnapshot.lines[0]!.sectionFlow,
-          morningPeak: { ...transitSnapshot.lines[0]!.sectionFlow.morningPeak, forward: [] },
-        },
-      }],
-    })).toBe(false);
-    expect(isTransitWorkerSnapshot({
-      ...transitSnapshot,
-      lines: [{
-        ...transitSnapshot.lines[0]!,
-        sectionFlow: {
-          ...transitSnapshot.lines[0]!.sectionFlow,
-          eveningPeak: {
-            ...transitSnapshot.lines[0]!.sectionFlow.eveningPeak,
-            forward: [{ load: Number.NaN, capacity: 0, loadFactor: 0 }],
-          },
-        },
-      }],
-    })).toBe(false);
-    expect(isTransitWorkerSnapshot({
-      ...transitSnapshot,
-      lines: [{
-        ...transitSnapshot.lines[0]!,
-        sectionFlow: {
-          ...transitSnapshot.lines[0]!.sectionFlow,
-          offPeak: {
-            ...transitSnapshot.lines[0]!.sectionFlow.offPeak,
-            backward: [{ load: 0, capacity: -1, loadFactor: 0 }],
-          },
-        },
-      }],
+      lines: [{ ...transitSnapshot.lines[0]!, sectionFlow, stationFlows }],
     })).toBe(false);
     expect(isTransitWorkerSnapshot({
       ...transitSnapshot,
@@ -455,6 +429,14 @@ describe('transit worker protocol guards', () => {
     expect(isTransitWorkerSaveState({
       ...saveState,
       transit: { ...saveState.transit, actualAttempts: [{ key: 'bad', trips: -1 }] },
+    })).toBe(false);
+  });
+
+  it('accepts transit snapshots without line-flow data and rejects them when present', () => {
+    expect(isTransitWorkerSnapshot(transitSnapshot)).toBe(true);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      lines: [{ ...transitSnapshot.lines[0]!, sectionFlow, stationFlows }],
     })).toBe(false);
   });
 

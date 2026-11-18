@@ -36,6 +36,13 @@ async function saveState(runtime: TransitWorkerRuntime): Promise<TransitWorkerSa
   return JSON.parse(JSON.stringify(output.state)) as TransitWorkerSaveState;
 }
 
+async function requestLineFlows(runtime: TransitWorkerRuntime) {
+  const outputs = await runtime.handle({ type: 'requestLineFlows', requestId: 'flows-1' });
+  const output = outputs.find((message) => message.type === 'lineFlows');
+  if (!output || output.type !== 'lineFlows') throw new Error('Expected line flows.');
+  return output.lines;
+}
+
 describe('TransitWorkerRuntime', () => {
   it('rejects a fractional population while decoding village attributes', async () => {
     await expect(loadVillageSource({
@@ -78,6 +85,40 @@ describe('TransitWorkerRuntime', () => {
       restoredSnapshot = transitSnapshot(restored.advanceTick());
     }
     expect(restoredSnapshot).toEqual(uninterruptedSnapshot);
+  });
+
+  it('omits line flows from saves and loads older saves that include them', async () => {
+    const source = new TransitWorkerRuntime();
+    await source.handle({ type: 'start', seed: 42, villages, network, paused: true });
+    const saved = await saveState(source);
+    for (const line of saved.transit.snapshot.lines) {
+      expect('sectionFlow' in line).toBe(false);
+      expect('stationFlows' in line).toBe(false);
+    }
+
+    const legacySaved = JSON.parse(JSON.stringify(saved)) as TransitWorkerSaveState;
+    const sourceFlows = await requestLineFlows(source);
+    for (const line of legacySaved.transit.snapshot.lines) {
+      const flows = sourceFlows.find((candidate) => candidate.lineId === line.lineId);
+      if (!flows) throw new Error(`Missing flows for ${line.lineId}.`);
+      line.sectionFlow = flows.sectionFlow;
+      line.stationFlows = flows.stationFlows;
+    }
+    expect(JSON.stringify(legacySaved).length).toBeGreaterThan(JSON.stringify(saved).length);
+
+    const loadAndRequestFlows = async (state: TransitWorkerSaveState) => {
+      const runtime = new TransitWorkerRuntime();
+      await runtime.handle({
+        type: 'start', seed: 0, villages, network: createEmptyNetwork(), paused: true,
+      });
+      const outputs = await runtime.handle({ type: 'loadState', requestId: 'load-1', state });
+      expect(outputs[0]).toEqual({ type: 'loadStateResult', requestId: 'load-1', ok: true });
+      return requestLineFlows(runtime);
+    };
+
+    const newSaveFlows = await loadAndRequestFlows(saved);
+    const legacySaveFlows = await loadAndRequestFlows(legacySaved);
+    expect(legacySaveFlows).toEqual(newSaveFlows);
   });
 
   it('applies pause, resume, and supported speeds to fixed tick handling', async () => {

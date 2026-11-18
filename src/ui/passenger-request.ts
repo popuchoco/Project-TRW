@@ -16,6 +16,30 @@ interface PassengerRequestHandlerOptions {
 
 const CANCELLED_MESSAGE = '路網或畫面已變更，已取消跟隨代表旅客。';
 
+/** Returns the next distinct station in a representative trip, wrapping at the end. */
+export function nextPassengerStationId(trip: RepresentativePassenger): string | undefined {
+  const stationIds: string[] = [];
+  const seenStationIds = new Set<string>();
+  const addStation = (stationId: string | undefined): void => {
+    if (stationId !== undefined && !seenStationIds.has(stationId)) {
+      seenStationIds.add(stationId);
+      stationIds.push(stationId);
+    }
+  };
+
+  addStation(trip.startStationId);
+  for (const leg of trip.legs) {
+    addStation(leg.fromStationId);
+    addStation(leg.toStationId);
+  }
+  addStation(trip.endStationId);
+
+  if (stationIds.length < 2) return undefined;
+  const selectedIndex = stationIds.indexOf(trip.selectedStationId);
+  if (selectedIndex === -1) return undefined;
+  return stationIds[(selectedIndex + 1) % stationIds.length];
+}
+
 /** Guards asynchronous representative-passenger responses against stale network, view, or request state. */
 export function createPassengerRequestHandler({
   getNetworkVersion,

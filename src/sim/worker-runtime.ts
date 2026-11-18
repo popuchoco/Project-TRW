@@ -16,6 +16,7 @@ import {
   isTransitMainToWorkerMessage,
   type MainToWorkerMessage,
   type LineFlowsMessage,
+  type TransitLineSummary,
   type TransitMainToWorkerMessage,
   type TransitWorkerSaveState,
   type TransitWorkerSnapshot,
@@ -220,8 +221,15 @@ export class TransitWorkerRuntime {
 
   private transitSnapshot(): Extract<TransitWorkerToMainMessage, { type: 'snapshot' }> {
     const summary = this.simulation!.snapshot();
+    const lines: TransitLineSummary[] = summary.lines.map((line) => {
+      const wireLine = { ...line };
+      Reflect.deleteProperty(wireLine, 'sectionFlow');
+      Reflect.deleteProperty(wireLine, 'stationFlows');
+      return wireLine;
+    });
     const snapshot: TransitWorkerSnapshot = {
       ...summary,
+      lines,
       seq: this.sequence,
       seed: this.seed,
       trains: visibleTrainPositions(this.simulation!.network, summary.currentPeriodId, summary.gameTimeMs),

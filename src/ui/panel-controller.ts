@@ -9,11 +9,11 @@ import type { SimClient, SimStartOptions } from '../sim/client';
 import type { SimSpeed } from '../sim/clock';
 import type { SimState } from '../sim/core';
 import type { TransitWorkerSnapshot } from '../sim/protocol';
-import { createLineFlowsCache } from './line-flows-cache';
+import { createLineFlowsCache, planLineFlowRequests } from './line-flows-cache';
 import { importSaveFile, triggerSaveDownload } from '../save/import-export';
 import { createSimulationPanels, type SimulationPanels } from './panels';
 import type { AppUi } from './app-shell';
-import { createPassengerRequestHandler } from './passenger-request';
+import { createPassengerRequestHandler, nextPassengerStationId } from './passenger-request';
 
 interface PanelControllerDeps {
   mount: HTMLElement;
@@ -73,6 +73,7 @@ export function createPanelController({
   let latestTransitSnapshot: TransitWorkerSnapshot | undefined;
   const lineFlowsCache = createLineFlowsCache();
   const requestedLineFlows = new Set<string>();
+  let lineFlowsFailureNotified = false;
   const panelControllerRef: { current?: SimulationPanels } = {};
   let metroViewActive = Boolean(rendererState.current?.isMetroView);
   let metroViewRevision = 0;
@@ -86,10 +87,12 @@ export function createPanelController({
     );
     const transitClient = getTransitClient();
     if (transitClient) {
-      for (const line of networkHistory.network.lines) {
-        if (lineFlowsCache.get(line.id) || requestedLineFlows.has(line.id)) continue;
-        requestedLineFlows.add(line.id);
-        void transitClient.requestLineFlows(line.id).catch(() => {
+      const lineIds = networkHistory.network.lines.map(({ id }) => id);
+      for (const lineId of planLineFlowRequests(lineFlowsCache, lineIds, requestedLineFlows)) {
+        requestedLineFlows.add(lineId);
+        void transitClient.requestLineFlows(lineId).catch(() => {
+          if (lineFlowsFailureNotified) return;
+          lineFlowsFailureNotified = true;
           showStatus('路線斷面流量載入失敗。');
         });
       }
@@ -109,6 +112,7 @@ export function createPanelController({
       followedPassenger,
       stationNames,
       lineNames,
+      getMapRenderer()?.isPassengerTripEnded() ?? false,
     );
   };
   const saveStateProviders: SaveStateProviders = {
@@ -160,11 +164,20 @@ export function createPanelController({
   };
 
   const initializePanels = (cityController: CityController): void => {
+    let followAnotherBaseline: ReturnType<MapRenderer['getFollowPassengerTrip']>;
     const requestPassenger = createPassengerRequestHandler({
       getNetworkVersion: () => cityController.getNetworkVersion(),
       isMetroViewActive: () => Boolean(rendererState.current?.isMetroView),
       getMetroViewRevision: () => metroViewRevision,
-      followPassenger: (trip, gameTime) => cityController.followPassenger(trip, gameTime),
+      followPassenger: (trip, gameTime) => {
+        const baseline = followAnotherBaseline;
+        followAnotherBaseline = undefined;
+        if (baseline?.odKey === trip.odKey && baseline.pathSignature === trip.pathSignature) {
+          showStatus('這條路線上沒有其他代表旅客');
+          return true;
+        }
+        return cityController.followPassenger(trip, gameTime);
+      },
       getGameTime: (client) => client.getStatus().gameTimeMs,
       showStatus,
     });
@@ -192,6 +205,7 @@ export function createPanelController({
       },
       followLine: (lineId) => { cityController.followLine(lineId); },
       followPassenger: (stationId) => {
+        followAnotherBaseline = undefined;
         const transitClient = getTransitClient();
         if (!transitClient) {
           showStatus('模擬尚未啟動，無法跟隨代表旅客。');
@@ -199,6 +213,30 @@ export function createPanelController({
         }
         void requestPassenger(stationId, transitClient);
       },
+      replayPassenger: () => {
+        const gameTime = getTransitClient()?.getStatus().gameTimeMs;
+        if (gameTime === undefined) {
+          showStatus('模擬尚未啟動，無法重播。');
+          return;
+        }
+        if (!cityController.replayPassenger(gameTime)) showStatus('無法重播代表旅客。');
+      },
+      followAnotherPassenger: () => {
+        const currentPassenger = getMapRenderer()?.getFollowPassengerTrip();
+        const stationId = currentPassenger ? nextPassengerStationId(currentPassenger) : undefined;
+        if (!currentPassenger || !stationId) {
+          showStatus('這條路線上沒有其他代表旅客');
+          return;
+        }
+        const transitClient = getTransitClient();
+        if (!transitClient) {
+          showStatus('模擬尚未啟動，無法選擇另一位代表旅客。');
+          return;
+        }
+        followAnotherBaseline = currentPassenger;
+        void requestPassenger(stationId, transitClient);
+      },
+      closePassengerFollow: () => cityController.closePassengerFollow(),
     });
     metroViewActive = Boolean(rendererState.current?.isMetroView);
     panelControllerRef.current.element.hidden = !metroViewActive;
@@ -288,8 +326,9 @@ export function createPanelController({
     transitClient.subscribeLineFlows((message) => {
       const previousVersion = lineFlowsCache.networkVersion();
       if (!lineFlowsCache.apply(message)) return;
-      if (previousVersion !== undefined && message.networkVersion > previousVersion) {
+      if (previousVersion !== message.networkVersion) {
         requestedLineFlows.clear();
+        lineFlowsFailureNotified = false;
       }
       for (const line of message.lines) requestedLineFlows.delete(line.lineId);
       updatePanels();
