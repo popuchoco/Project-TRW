@@ -414,7 +414,7 @@ export function isTransitWorkerSnapshot(value: unknown): value is TransitWorkerS
     || !Array.isArray(value.trains) || value.trains.length > 300
     || !isNonNegativeNumber(value.recomputeMs)) return false;
   const trains = value.trains;
-  if (!isTransitSummary(value)) return false;
+  if (!isTransitSummary(value, false, true)) return false;
   return trains.every((train: unknown) => isRecord(train)
     && typeof train.id === 'string' && train.id.length > 0
     && typeof train.lineId === 'string' && train.lineId.length > 0

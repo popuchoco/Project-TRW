@@ -458,6 +458,16 @@ describe('transit worker protocol guards', () => {
     })).toBe(false);
   });
 
+  it('accepts transit snapshots with or without line-flow data', () => {
+    const snapshotWithoutFlows = JSON.parse(JSON.stringify(transitSnapshot)) as Record<string, unknown>;
+    const lines = snapshotWithoutFlows.lines as Array<Record<string, unknown>>;
+    delete lines[0]!.sectionFlow;
+    delete lines[0]!.stationFlows;
+
+    expect(isTransitWorkerSnapshot(transitSnapshot)).toBe(true);
+    expect(isTransitWorkerSnapshot(snapshotWithoutFlows)).toBe(true);
+  });
+
   it('validates quality scores and accepts v2 saves whose older snapshots lack them', () => {
     const numericQuality = {
       wait: 80,
