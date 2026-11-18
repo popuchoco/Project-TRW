@@ -75,6 +75,13 @@ describe("precache list", () => {
     expect(list).toContain("./data/villages-6300065000.topo.json");
   });
 
+  it("includes the Taoyuan village manifest, population and topology files", () => {
+    const list = buildPrecacheList([]);
+    expect(list).toContain("./data/villages-68000-manifest.json");
+    expect(list).toContain("./data/villages-68000.json");
+    expect(list).toContain("./data/villages-68000.topo.json");
+  });
+
   it("includes LOD2 and the LOD3 counties the 北北 metro view loads, so offline 北北 has map detail", () => {
     const list = buildPrecacheList([]);
     expect(list).toContain("./data/trw-1140318-lod2.topo.json");
