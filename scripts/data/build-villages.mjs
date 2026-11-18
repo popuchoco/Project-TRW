@@ -38,6 +38,19 @@ const REGIONS = [{
     population: 6_451_184,
     townCodes: 41,
   },
+}, {
+  id: 'taoyuan',
+  countyCodes: ['68000'],
+  fileStem: 'villages-68000',
+  manifestFilename: 'villages-68000-manifest.json',
+  layerName: 'taoyuan',
+  expected: {
+    villages: 529,
+    noteVillages: 0,
+    populationRows: 529,
+    population: 2_358_720,
+    townCodes: 13,
+  },
 }];
 const SIMPLIFY_PERCENT = 3;
 const TOPOLOGY_QUANTIZATION = 1_000_000;
