@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { RepresentativePassenger } from '../../src/sim/transit/representative';
 import { buildPassengerViewModel, createPassengerView } from '../../src/ui/passenger-view';
 
@@ -54,8 +55,20 @@ describe('representative passenger view', () => {
       '紅線：中央站 → 市政府站・10 分',
     ]);
     expect(model.totalText).toBe('門到門時間：11.5 分');
-    expect(model.whyText).toContain('此行程 11.5 分；替代方案 15 分');
-    expect(model.whyText).toContain('此行程較快 3.5 分');
+    expect(model.whyText).toBe('為什麼選這條：此行程 11.5 分，比替代方案快 3.5 分；模擬依一般化成本做機率選擇。');
+  });
+
+  it('explains when the alternative is faster without calling the chosen trip fastest', () => {
+    const model = buildPassengerViewModel({ ...trip, doorToDoorMinutes: 15, alternativeMinutes: 11.5 });
+
+    expect(model.whyText).toBe('為什麼選這條：替代方案快 3.5 分；模擬依一般化成本做機率選擇，這位旅客仍選了此行程。');
+    expect(model.whyText).not.toContain('最快');
+  });
+
+  it('explains when there is no alternative', () => {
+    const model = buildPassengerViewModel({ ...trip, alternativeMinutes: null });
+
+    expect(model.whyText).toBe('為什麼選這條：沒有可比較的替代方案；此行程需 11.5 分。');
   });
 
   it('falls back to a line id when the line name is unknown', () => {
@@ -75,5 +88,15 @@ describe('representative passenger view', () => {
     expect(list?.children.map((child) => child.textContent)).toEqual(model.legs);
     expect(root.children[3]?.textContent).toBe(model.totalText);
     expect(root.children[4]?.textContent).toBe(model.whyText);
+  });
+
+  it('uses CSS variables for passenger panel colors and typography', () => {
+    const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
+    const rules = css.match(/\.(?:passenger-follow-details|representative-passenger)(?:\s+[^,{]+)?\s*\{[^}]*\}/g) ?? [];
+
+    expect(rules.length).toBeGreaterThan(0);
+    expect(rules.join('\n')).not.toMatch(/#[\da-f]{3,8}\b/i);
+    expect(rules.join('\n')).toMatch(/color:\s*var\(--panel-color-/);
+    expect(rules.join('\n')).toMatch(/font-size:\s*var\(--panel-font-/);
   });
 });

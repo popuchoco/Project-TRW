@@ -54,10 +54,13 @@ export function buildPassengerViewModel(
   } else {
     const alternative = trip.alternativeMinutes;
     const difference = Math.abs(chosen - alternative);
-    const comparison = difference === 0
-      ? '時間相同'
-      : chosen < alternative ? `此行程較快 ${formatMinutes(difference)}` : `替代方案較快 ${formatMinutes(difference)}`;
-    whyText = `為什麼選這條：此行程 ${formatMinutes(chosen)}；替代方案 ${formatMinutes(alternative)}（${comparison}）。`;
+    if (difference === 0) {
+      whyText = `為什麼選這條：此行程與替代方案皆需 ${formatMinutes(chosen)}；這是模擬的一般化成本機率選擇結果。`;
+    } else if (chosen < alternative) {
+      whyText = `為什麼選這條：此行程 ${formatMinutes(chosen)}，比替代方案快 ${formatMinutes(difference)}；模擬依一般化成本做機率選擇。`;
+    } else {
+      whyText = `為什麼選這條：替代方案快 ${formatMinutes(difference)}；模擬依一般化成本做機率選擇，這位旅客仍選了此行程。`;
+    }
   }
 
   return {

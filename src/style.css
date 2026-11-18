@@ -5,6 +5,9 @@
   --panel-font-secondary: 10px;
   --panel-font-compact: 9px;
   --panel-font-micro: 8px;
+  --panel-color-text: #25313c;
+  --panel-color-muted: #637078;
+  --panel-color-border: rgb(103 119 128 / 20%);
   --panel-space-tight: 4px;
   --panel-space-small: 6px;
   --panel-space-section: 8px;
@@ -17,6 +20,51 @@
   background: #f4f6f8;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+}
+
+.passenger-follow-details {
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
+  color: var(--panel-color-text);
+  font-size: var(--panel-font-body);
+}
+
+.representative-passenger {
+  display: grid;
+  gap: var(--panel-space-tight);
+  min-width: 0;
+  padding: var(--panel-space-small) 0;
+  border-top: 1px solid var(--panel-color-border);
+}
+
+.representative-passenger h3,
+.representative-passenger p,
+.representative-passenger ul {
+  min-width: 0;
+  margin: 0;
+}
+
+.representative-passenger h3 {
+  font-size: var(--panel-font-body);
+}
+
+.representative-passenger ul {
+  display: grid;
+  gap: 2px;
+  padding-inline-start: 16px;
+  color: var(--panel-color-muted);
+  font-size: var(--panel-font-secondary);
+}
+
+.representative-passenger li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.representative-passenger p {
+  color: var(--panel-color-muted);
+  font-size: var(--panel-font-secondary);
 }
 
 * {
