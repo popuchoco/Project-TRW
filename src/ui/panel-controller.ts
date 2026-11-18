@@ -9,6 +9,7 @@ import type { SimClient, SimStartOptions } from '../sim/client';
 import type { SimSpeed } from '../sim/clock';
 import type { SimState } from '../sim/core';
 import type { TransitWorkerSnapshot } from '../sim/protocol';
+import { createLineFlowsCache } from './line-flows-cache';
 import { importSaveFile, triggerSaveDownload } from '../save/import-export';
 import { createSimulationPanels, type SimulationPanels } from './panels';
 import type { AppUi } from './app-shell';
@@ -70,6 +71,8 @@ export function createPanelController({
   updateRenderActivity,
 }: PanelControllerDeps): PanelController {
   let latestTransitSnapshot: TransitWorkerSnapshot | undefined;
+  const lineFlowsCache = createLineFlowsCache();
+  const requestedLineFlows = new Set<string>();
   const panelControllerRef: { current?: SimulationPanels } = {};
   let metroViewActive = Boolean(rendererState.current?.isMetroView);
   let metroViewRevision = 0;
@@ -79,7 +82,18 @@ export function createPanelController({
       networkHistory.network,
       latestTransitSnapshot,
       selectedNetworkItem?.type === 'station' ? selectedNetworkItem.id : undefined,
+      (lineId) => lineFlowsCache.get(lineId),
     );
+    const transitClient = getTransitClient();
+    if (transitClient) {
+      for (const line of networkHistory.network.lines) {
+        if (lineFlowsCache.get(line.id) || requestedLineFlows.has(line.id)) continue;
+        requestedLineFlows.add(line.id);
+        void transitClient.requestLineFlows(line.id).catch(() => {
+          showStatus('路線斷面流量載入失敗。');
+        });
+      }
+    }
     const followDisplay = getMapRenderer()?.getFollowDisplayInfo();
     const lineStats = followDisplay
       ? latestTransitSnapshot?.lines.find(({ lineId }) => lineId === followDisplay.lineId)
@@ -257,6 +271,8 @@ export function createPanelController({
     continuation: SavePayloadV2['transit'],
     options: SimStartOptions,
   ): void => {
+    lineFlowsCache.clear();
+    requestedLineFlows.clear();
     transitClient.subscribe((snapshot) => {
       if ('trains' in snapshot) {
         latestTransitSnapshot = snapshot;
@@ -268,6 +284,15 @@ export function createPanelController({
         );
         updatePanels();
       }
+    });
+    transitClient.subscribeLineFlows((message) => {
+      const previousVersion = lineFlowsCache.networkVersion();
+      if (!lineFlowsCache.apply(message)) return;
+      if (previousVersion !== undefined && message.networkVersion > previousVersion) {
+        requestedLineFlows.clear();
+      }
+      for (const line of message.lines) requestedLineFlows.delete(line.lineId);
+      updatePanels();
     });
     const dataBase = new URL(import.meta.env.BASE_URL, document.baseURI);
     transitClient.startTransit(
