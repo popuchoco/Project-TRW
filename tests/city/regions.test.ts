@@ -15,17 +15,17 @@ describe('regions', () => {
     expect(REGIONS.northNorthTaoyuan.countyCodes).toEqual(['63000', '65000', '68000']);
     expect(REGIONS.northNorth.villageAssets).toEqual([
       {
-        topology: 'data/villages-northNorth.topology.json',
-        attributes: 'data/villages-northNorth.json',
+        topology: 'data/villages-6300065000.topo.json',
+        attributes: 'data/villages-6300065000.json',
       },
     ]);
     expect(REGIONS.northNorthTaoyuan.villageAssets).toEqual([
       {
-        topology: 'data/villages-northNorth.topology.json',
-        attributes: 'data/villages-northNorth.json',
+        topology: 'data/villages-6300065000.topo.json',
+        attributes: 'data/villages-6300065000.json',
       },
       {
-        topology: 'data/villages-68000.topology.json',
+        topology: 'data/villages-68000.topo.json',
         attributes: 'data/villages-68000.json',
       },
     ]);
@@ -100,5 +100,22 @@ describe('regions', () => {
     } as unknown as SavePayloadV2;
 
     expect(() => extendRegionPayload(payload, 'northNorth')).toThrow();
+  });
+});
+
+describe('region village assets (review H-1)', () => {
+  it('point at files that exist in public/data and are precached', async () => {
+    const { existsSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const { buildPrecacheList } = await import('../../src/sw/precache');
+    const precache = new Set(buildPrecacheList([]));
+    for (const region of Object.values(REGIONS)) {
+      for (const asset of region.villageAssets) {
+        for (const path of [asset.topology, asset.attributes]) {
+          expect(existsSync(resolve(__dirname, '../../public', path)), path).toBe(true);
+          expect(precache.has(`./${path}`), path).toBe(true);
+        }
+      }
+    }
   });
 });

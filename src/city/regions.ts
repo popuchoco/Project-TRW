@@ -25,8 +25,8 @@ export const REGIONS: Readonly<Record<RegionId, RegionDefinition>> = {
     countyCodes: ['63000', '65000'],
     villageAssets: [
       {
-        topology: 'data/villages-northNorth.topology.json',
-        attributes: 'data/villages-northNorth.json',
+        topology: 'data/villages-6300065000.topo.json',
+        attributes: 'data/villages-6300065000.json',
       },
     ],
     coreTownCodes: TAIPEI_CORE_TOWNCODES,
@@ -37,11 +37,11 @@ export const REGIONS: Readonly<Record<RegionId, RegionDefinition>> = {
     countyCodes: ['63000', '65000', '68000'],
     villageAssets: [
       {
-        topology: 'data/villages-northNorth.topology.json',
-        attributes: 'data/villages-northNorth.json',
+        topology: 'data/villages-6300065000.topo.json',
+        attributes: 'data/villages-6300065000.json',
       },
       {
-        topology: 'data/villages-68000.topology.json',
+        topology: 'data/villages-68000.topo.json',
         attributes: 'data/villages-68000.json',
       },
     ],
