@@ -2,7 +2,7 @@ import type { CityController } from '../city/controller';
 import { renameStation, setLineCars, setLineTrains } from '../city/commands';
 import type { History } from '../city/history';
 import type { Network } from '../city/network';
-import { DEFAULT_REGION_ID } from '../city/regions';
+import { DEFAULT_REGION_ID, REGIONS } from '../city/regions';
 import type { RegionId } from '../city/regions';
 import type { MapRenderer } from '../render/MapRenderer';
 import { saveCurrentState, type SaveStateProviders } from '../save/state';
@@ -344,9 +344,16 @@ export function createPanelController({
       updatePanels();
     });
     const dataBase = new URL(import.meta.env.BASE_URL, document.baseURI);
+    const regionId = getRegion();
+    const villageSource = regionId === DEFAULT_REGION_ID
+      ? { kind: 'url' as const, url: new URL('data/villages-6300065000.json', dataBase).href }
+      : {
+        kind: 'urls' as const,
+        urls: REGIONS[regionId].villageAssets.map(({ attributes }) => new URL(attributes, dataBase).href),
+      };
     transitClient.startTransit(
       seed,
-      { kind: 'url', url: new URL('data/villages-6300065000.json', dataBase).href },
+      villageSource,
       network,
       continuation,
       options,
