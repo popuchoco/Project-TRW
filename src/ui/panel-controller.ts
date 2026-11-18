@@ -9,7 +9,7 @@ import type { SimClient, SimStartOptions } from '../sim/client';
 import type { SimSpeed } from '../sim/clock';
 import type { SimState } from '../sim/core';
 import type { TransitWorkerSnapshot } from '../sim/protocol';
-import { createLineFlowsCache } from './line-flows-cache';
+import { createLineFlowsCache, planLineFlowRequests } from './line-flows-cache';
 import { importSaveFile, triggerSaveDownload } from '../save/import-export';
 import { createSimulationPanels, type SimulationPanels } from './panels';
 import type { AppUi } from './app-shell';
@@ -73,6 +73,7 @@ export function createPanelController({
   let latestTransitSnapshot: TransitWorkerSnapshot | undefined;
   const lineFlowsCache = createLineFlowsCache();
   const requestedLineFlows = new Set<string>();
+  let lineFlowsFailureNotified = false;
   const panelControllerRef: { current?: SimulationPanels } = {};
   let metroViewActive = Boolean(rendererState.current?.isMetroView);
   let metroViewRevision = 0;
@@ -86,10 +87,12 @@ export function createPanelController({
     );
     const transitClient = getTransitClient();
     if (transitClient) {
-      for (const line of networkHistory.network.lines) {
-        if (lineFlowsCache.get(line.id) || requestedLineFlows.has(line.id)) continue;
-        requestedLineFlows.add(line.id);
-        void transitClient.requestLineFlows(line.id).catch(() => {
+      const lineIds = networkHistory.network.lines.map(({ id }) => id);
+      for (const lineId of planLineFlowRequests(lineFlowsCache, lineIds, requestedLineFlows)) {
+        requestedLineFlows.add(lineId);
+        void transitClient.requestLineFlows(lineId).catch(() => {
+          if (lineFlowsFailureNotified) return;
+          lineFlowsFailureNotified = true;
           showStatus('路線斷面流量載入失敗。');
         });
       }
@@ -288,8 +291,9 @@ export function createPanelController({
     transitClient.subscribeLineFlows((message) => {
       const previousVersion = lineFlowsCache.networkVersion();
       if (!lineFlowsCache.apply(message)) return;
-      if (previousVersion !== undefined && message.networkVersion > previousVersion) {
+      if (previousVersion !== message.networkVersion) {
         requestedLineFlows.clear();
+        lineFlowsFailureNotified = false;
       }
       for (const line of message.lines) requestedLineFlows.delete(line.lineId);
       updatePanels();

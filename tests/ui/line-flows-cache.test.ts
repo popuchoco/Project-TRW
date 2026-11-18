@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LineFlowsMessage } from '../../src/sim/protocol';
 import type { LineFlowsData } from '../../src/sim/transit/TransitSim';
-import { createLineFlowsCache } from '../../src/ui/line-flows-cache';
+import { createLineFlowsCache, planLineFlowRequests } from '../../src/ui/line-flows-cache';
 
 function line(lineId: string): LineFlowsData {
   return { lineId } as LineFlowsData;
@@ -19,6 +19,26 @@ function message(networkVersion: number, lines: LineFlowsData[], requestId?: str
 }
 
 describe('line flows cache', () => {
+  it('plans no requests before the cache has a network version', () => {
+    const cache = createLineFlowsCache();
+
+    expect(planLineFlowRequests(cache, ['blue', 'red'], new Set())).toEqual([]);
+  });
+
+  it('plans uncached line requests in input order', () => {
+    const cache = createLineFlowsCache();
+    cache.apply(message(2, [line('red')]));
+
+    expect(planLineFlowRequests(cache, ['blue', 'red', 'green'], new Set())).toEqual(['blue', 'green']);
+  });
+
+  it('excludes line requests that are already in flight', () => {
+    const cache = createLineFlowsCache();
+    cache.apply(message(2, []));
+
+    expect(planLineFlowRequests(cache, ['blue', 'red'], new Set(['red']))).toEqual(['blue']);
+  });
+
   it('discards messages from an older network version', () => {
     const cache = createLineFlowsCache();
     const current = line('blue');

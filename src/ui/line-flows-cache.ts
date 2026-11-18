@@ -8,6 +8,15 @@ export interface LineFlowsCache {
   clear(): void;
 }
 
+export function planLineFlowRequests(
+  cache: LineFlowsCache,
+  lineIds: readonly string[],
+  inFlight: ReadonlySet<string>,
+): string[] {
+  if (cache.networkVersion() === undefined) return [];
+  return lineIds.filter((lineId) => !cache.get(lineId) && !inFlight.has(lineId));
+}
+
 export function createLineFlowsCache(): LineFlowsCache {
   let version: number | undefined;
   const lines = new Map<string, LineFlowsData>();
