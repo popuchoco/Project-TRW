@@ -24,6 +24,7 @@ import {
   sectionFlowFromSnapshot,
   type SectionFlowChartRenderer,
 } from './section-flow-chart';
+import { crossCityView } from './county-flow-view';
 
 const numberFormat = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
 const moneyFormat = new Intl.NumberFormat('zh-TW', {
@@ -322,9 +323,19 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const cityRidership = makeValueRow('每日運量');
   const cityShare = makeValueRow('捷運＋BRT 佔有率');
   const cityProfit = makeValueRow('盈虧率');
-  cityFacts.append(cityRidership.row, cityShare.row, cityProfit.row);
+  const cityCrossCityTrips = makeValueRow('跨市旅次（模擬值）');
+  const cityCrossCityRevenue = makeValueRow('跨市票收（模擬值）');
+  cityFacts.append(
+    cityRidership.row,
+    cityShare.row,
+    cityProfit.row,
+    cityCrossCityTrips.row,
+    cityCrossCityRevenue.row,
+  );
+  const cityCrossCityPairsHeading = element('p', 'panel-subtitle', '跨市主要旅次（模擬值）');
+  const cityCrossCityPairs = element('ul', 'panel-list');
   const cityQualityPanel = createQualityPanel();
-  city.content.append(cityFacts, cityQualityPanel.element);
+  city.content.append(cityFacts, cityCrossCityPairsHeading, cityCrossCityPairs, cityQualityPanel.element);
 
   const station = makeSection('車站營運概況');
   const stationPlaceholder = element('p', 'panel-placeholder', '選取車站後查看營運概況。');
@@ -399,6 +410,14 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     cityRidership.value.textContent = `${formatPanelCount(cityStats?.dailyRidership ?? 0)} 人`;
     cityShare.value.textContent = formatPanelPercent(cityStats?.transitShare ?? 0);
     cityProfit.value.textContent = formatPanelPercent(cityStats?.profitLossRatio ?? 0);
+    const crossCity = crossCityView((cityStats as unknown as {
+      countyFlows?: Parameters<typeof crossCityView>[0];
+    } | undefined)?.countyFlows);
+    cityCrossCityTrips.value.textContent = crossCity.trips;
+    cityCrossCityRevenue.value.textContent = crossCity.fareRevenue;
+    cityCrossCityPairs.replaceChildren(...(crossCity.topPairs.length
+      ? crossCity.topPairs.map((pair) => element('li', '', pair))
+      : [element('li', '', '—')]));
     cityQualityPanel.update(cityStats?.quality ?? null, cityStats?.quality?.metrics ?? null);
 
     const selectedStation = selectedStationId

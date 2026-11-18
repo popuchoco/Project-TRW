@@ -26,6 +26,10 @@ class FakeElement {
 
   constructor(readonly tagName: string) {}
 
+  get lastElementChild(): FakeElement | null {
+    return this.children[this.children.length - 1] ?? null;
+  }
+
   set textContent(value: string | null) { this.ownText = value ?? ''; }
   get textContent(): string { return this.ownText; }
 
@@ -130,6 +134,84 @@ describe('passenger follow actions', () => {
       actionButtons[1]?.click();
       expect(replayPassenger).toHaveBeenCalledOnce();
       expect(followAnotherPassenger).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('cross city panel values', () => {
+  function createPanels() {
+    const fakeDocument = {
+      activeElement: undefined,
+      createElement: (tag: string) => new FakeElement(tag),
+      createElementNS: (_namespace: string, tag: string) => new FakeElement(tag),
+    };
+    vi.stubGlobal('document', fakeDocument as unknown as Document);
+    const container = new FakeElement('div');
+    const panels = createSimulationPanels(container as unknown as HTMLElement, {
+      renameStation: vi.fn(),
+      setLineTrains: vi.fn(),
+      setLineCars: vi.fn(),
+      followLine: vi.fn(),
+      followPassenger: vi.fn(),
+      replayPassenger: vi.fn(),
+      followAnotherPassenger: vi.fn(),
+      closePassengerFollow: vi.fn(),
+    });
+    return { container, panels };
+  }
+
+  function valueFor(container: FakeElement, label: string): string | undefined {
+    const rowLabel = descendants(container).find((node) => node.textContent === label);
+    return rowLabel?.parentElement?.children[1]?.textContent;
+  }
+
+  it('shows simulated totals and the three busiest county pairs', () => {
+    const { container, panels } = createPanels();
+    try {
+      panels.update(
+        { stations: [], lines: [] } as unknown as Parameters<typeof panels.update>[0],
+        {
+          city: {
+            countyFlows: [
+              { originCounty: '65000', destinationCounty: '63000', trips: 100, fareRevenue: 500 },
+              { originCounty: '63000', destinationCounty: '65000', trips: 80, fareRevenue: 300 },
+              { originCounty: '65000', destinationCounty: '68000', trips: 50, fareRevenue: 200 },
+              { originCounty: '63000', destinationCounty: '68000', trips: 20, fareRevenue: 100 },
+              { originCounty: '65000', destinationCounty: '65000', trips: 999, fareRevenue: 9999 },
+            ],
+          },
+          stations: [],
+          lines: [],
+        } as unknown as Parameters<typeof panels.update>[1],
+      );
+
+      expect(valueFor(container, '跨市旅次（模擬值）')).toBe('250 人次（模擬值）');
+      expect(valueFor(container, '跨市票收（模擬值）')).toBe('NT$1,100（模擬值）');
+      const pairList = descendants(container).find((node) => node.className === 'panel-list');
+      expect(pairList?.children.map((pair) => pair.textContent)).toEqual([
+        '新北市→臺北市 100 人',
+        '臺北市→新北市 80 人',
+        '新北市→桃園市 50 人',
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('shows dashes when county flows are unavailable', () => {
+    const { container, panels } = createPanels();
+    try {
+      panels.update(
+        { stations: [], lines: [] } as unknown as Parameters<typeof panels.update>[0],
+        { city: {}, stations: [], lines: [] } as unknown as Parameters<typeof panels.update>[1],
+      );
+
+      expect(valueFor(container, '跨市旅次（模擬值）')).toBe('—');
+      expect(valueFor(container, '跨市票收（模擬值）')).toBe('—');
+      const pairList = descendants(container).find((node) => node.className === 'panel-list');
+      expect(pairList?.children.map((pair) => pair.textContent)).toEqual(['—']);
     } finally {
       vi.unstubAllGlobals();
     }
