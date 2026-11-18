@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { loadVillageSource, TransitWorkerRuntime } from '../../src/sim/worker-runtime';
 import { createEmptyNetwork, type Network } from '../../src/city/network';
@@ -59,6 +59,46 @@ async function requestLineFlows(runtime: TransitWorkerRuntime) {
 }
 
 describe('TransitWorkerRuntime', () => {
+  it('loads and sorts villages from multiple URLs', async () => {
+    const responses = {
+      '/villages-a.json': [{ VILLCODE: 'C', population: 30, demandPoint: [123, 25] }],
+      '/villages-b.json': [
+        { VILLCODE: 'B', population: 20, demandPoint: [122, 25] },
+        { VILLCODE: 'A', population: 10, demandPoint: [121, 25] },
+      ],
+    };
+    const requestedUrls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      requestedUrls.push(url);
+      return new Response(JSON.stringify(responses[url as keyof typeof responses]), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const loaded = await loadVillageSource({ kind: 'urls', urls: ['/villages-a.json', '/villages-b.json'] });
+      expect(requestedUrls).toEqual(['/villages-a.json', '/villages-b.json']);
+      expect(loaded).toEqual([
+        { code: 'A', population: 10, lon: 121, lat: 25 },
+        { code: 'B', population: 20, lon: 122, lat: 25 },
+        { code: 'C', population: 30, lon: 123, lat: 25 },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects duplicate VILLCODE values across multiple URLs', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify([
+      { VILLCODE: 'A', population: 10, demandPoint: [121, 25] },
+    ]), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(loadVillageSource({ kind: 'urls', urls: ['/villages-a.json', '/villages-b.json'] }))
+        .rejects.toThrow('duplicate VILLCODE A');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('rejects a fractional population while decoding village attributes', async () => {
     await expect(loadVillageSource({
       kind: 'data',

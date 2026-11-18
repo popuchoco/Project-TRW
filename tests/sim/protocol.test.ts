@@ -198,6 +198,10 @@ const lineFlowsMessage = {
 describe('transit worker protocol guards', () => {
   it.each([
     ['start', isTransitStartMessage, startMessage],
+    ['start with multiple village URLs', isTransitStartMessage, {
+      ...startMessage,
+      villages: { kind: 'urls', urls: ['/villages-a.json', '/villages-b.json'] },
+    }],
     ['setNetwork', isTransitSetNetworkMessage, { type: 'setNetwork', network }],
     ['pause', isTransitPauseMessage, { type: 'pause' }],
     ['resume', isTransitResumeMessage, { type: 'resume' }],
@@ -502,6 +506,24 @@ describe('transit worker protocol guards', () => {
       ...startMessage,
       villages: { kind: 'data', villages: [{ VILLCODE: 'x', population: 1.5, demandPoint: [121, 25] }] },
     })).toBe(false);
+  });
+
+  it('accepts one through eight non-empty village URLs', () => {
+    for (let count = 1; count <= 8; count += 1) {
+      expect(isTransitStartMessage({
+        ...startMessage,
+        villages: { kind: 'urls', urls: Array.from({ length: count }, (_, index) => `/villages-${index}.json`) },
+      })).toBe(true);
+    }
+  });
+
+  it.each([
+    ['zero URLs', []],
+    ['nine URLs', Array.from({ length: 9 }, (_, index) => `/villages-${index}.json`)],
+    ['an empty URL', ['']],
+    ['a URL over 2,000 characters', ['x'.repeat(2_001)]],
+  ])('rejects a village URL source with %s', (_name, urls) => {
+    expect(isTransitStartMessage({ ...startMessage, villages: { kind: 'urls', urls } })).toBe(false);
   });
 
   it('rejects missing transit state and malformed train positions', () => {

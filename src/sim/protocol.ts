@@ -38,7 +38,8 @@ export interface VillageAttribute {
 /** A URL keeps the 1,512-row source payload off the main-thread message queue. */
 export type VillageSource =
   | { kind: 'data'; villages: VillageAttribute[] }
-  | { kind: 'url'; url: string };
+  | { kind: 'url'; url: string }
+  | { kind: 'urls'; urls: string[] };
 
 /** Version 2 is the continuation envelope stored with the overall save schema v2. */
 export interface TransitWorkerSaveState {
@@ -215,6 +216,10 @@ function isVillageSource(value: unknown): value is VillageSource {
   if (!isRecord(value)) return false;
   if (value.kind === 'url') {
     return typeof value.url === 'string' && value.url.length > 0 && value.url.length <= 2_000;
+  }
+  if (value.kind === 'urls') {
+    return Array.isArray(value.urls) && value.urls.length >= 1 && value.urls.length <= 8
+      && value.urls.every((url: unknown) => typeof url === 'string' && url.length > 0 && url.length <= 2_000);
   }
   if (value.kind !== 'data' || !Array.isArray(value.villages) || value.villages.length > 20_000) return false;
   const codes = new Set<string>();
