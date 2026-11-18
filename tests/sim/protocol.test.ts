@@ -456,7 +456,10 @@ describe('transit worker protocol guards', () => {
         snapshot: { ...summary, city: { ...summary.city, countyFlows } },
       },
     });
-    const validCountyFlows = [{ countyCode: '68000', trips: 12, fareRevenue: 34 }];
+    const validCountyFlows = [
+      { originCounty: 'A', destinationCounty: '63000', trips: 12, fareRevenue: 34 },
+      { originCounty: '68000', destinationCounty: 'A', trips: 5, fareRevenue: 10 },
+    ];
 
     expect(isTransitWorkerSnapshot(transitSnapshot)).toBe(true);
     expect(isTransitWorkerSaveState(saveState)).toBe(true);
@@ -464,10 +467,24 @@ describe('transit worker protocol guards', () => {
     expect(isTransitWorkerSaveState(withSaveCountyFlows(validCountyFlows))).toBe(true);
 
     const invalidCountyFlows = [
-      [{ countyCode: '6800', trips: 12, fareRevenue: 34 }],
-      [{ countyCode: '68000', trips: -1, fareRevenue: 34 }],
-      [{ countyCode: '68000', trips: 12, fareRevenue: -1 }],
-      Array.from({ length: 65 }, () => ({ countyCode: '68000', trips: 1, fareRevenue: 1 })),
+      [{ destinationCounty: '63000', trips: 12, fareRevenue: 34 }],
+      [{ originCounty: '68000', trips: 12, fareRevenue: 34 }],
+      [{ countyCode: '68000', trips: 12, fareRevenue: 34 }],
+      [{ originCounty: '', destinationCounty: '63000', trips: 12, fareRevenue: 34 }],
+      [{ originCounty: '68000', destinationCounty: '', trips: 12, fareRevenue: 34 }],
+      [{ originCounty: '12345678901234567', destinationCounty: '63000', trips: 12, fareRevenue: 34 }],
+      [{ originCounty: '68000', destinationCounty: '12345678901234567', trips: 12, fareRevenue: 34 }],
+      [{ originCounty: '68000', destinationCounty: '63000', trips: -1, fareRevenue: 34 }],
+      [{ originCounty: '68000', destinationCounty: '63000', trips: Number.NaN, fareRevenue: 34 }],
+      [{ originCounty: '68000', destinationCounty: '63000', trips: 12, fareRevenue: -1 }],
+      [{ originCounty: '68000', destinationCounty: '63000', trips: 12, fareRevenue: Number.NaN }],
+      [
+        { originCounty: '68000', destinationCounty: '63000', trips: 1, fareRevenue: 1 },
+        { originCounty: '68000', destinationCounty: '63000', trips: 2, fareRevenue: 2 },
+      ],
+      Array.from({ length: 65 }, (_, index) => ({
+        originCounty: String(index), destinationCounty: 'A', trips: 1, fareRevenue: 1,
+      })),
     ];
     for (const countyFlows of invalidCountyFlows) {
       expect(isTransitWorkerSnapshot(withSnapshotCountyFlows(countyFlows))).toBe(false);
