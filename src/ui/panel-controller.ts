@@ -2,6 +2,8 @@ import type { CityController } from '../city/controller';
 import { renameStation, setLineCars, setLineTrains } from '../city/commands';
 import type { History } from '../city/history';
 import type { Network } from '../city/network';
+import { DEFAULT_REGION_ID } from '../city/regions';
+import type { RegionId } from '../city/regions';
 import type { MapRenderer } from '../render/MapRenderer';
 import { saveCurrentState, type SaveStateProviders } from '../save/state';
 import type { SavePayloadV2, SaveRecord, SaveStorage } from '../save/types';
@@ -21,6 +23,7 @@ interface PanelControllerDeps {
   networkHistory: History;
   rendererState: { current?: MapRenderer };
   getMapRenderer: () => MapRenderer | undefined;
+  getRegion?: () => RegionId;
   restoredPayload?: SavePayloadV2;
   freshSimulation: SimState;
   saveStorage: SaveStorage;
@@ -59,6 +62,7 @@ export function createPanelController({
   networkHistory,
   rendererState,
   getMapRenderer,
+  getRegion: getRegionDep,
   restoredPayload,
   freshSimulation,
   saveStorage,
@@ -70,6 +74,7 @@ export function createPanelController({
   showStatus,
   updateRenderActivity,
 }: PanelControllerDeps): PanelController {
+  const getRegion = getRegionDep ?? (() => restoredPayload?.region ?? DEFAULT_REGION_ID);
   let latestTransitSnapshot: TransitWorkerSnapshot | undefined;
   const lineFlowsCache = createLineFlowsCache();
   const requestedLineFlows = new Set<string>();
@@ -116,6 +121,7 @@ export function createPanelController({
     );
   };
   const saveStateProviders: SaveStateProviders = {
+    getRegion,
     getNetwork: () => networkHistory.network,
     getCamera: () => {
       const camera = getMapRenderer()?.camera;

@@ -1,4 +1,5 @@
 import type { Network } from "../city/network";
+import type { RegionId } from "../city/regions";
 import type { SaveCamera, SavePayloadV2, SaveSimulationState, SaveView } from "./types";
 import { savePayload } from "./save";
 import type { SaveRecord, SaveStorage } from "./types";
@@ -6,6 +7,7 @@ import type { TransitWorkerSaveState } from "../sim/protocol";
 
 /** Live application getters used to take a synchronous, consistent save snapshot. */
 export interface SaveStateProviders {
+  getRegion(): RegionId;
   getNetwork(): Network;
   getCamera(): SaveCamera;
   getView(): SaveView;
@@ -20,6 +22,7 @@ export function collectSavePayload(
   const network = providers.getNetwork();
   const simulation = providers.getSimulation();
   return {
+    region: providers.getRegion(),
     network: {
       stations: network.stations.map((station) => ({ ...station })),
       lines: network.lines.map((line) => ({ ...line, stationIds: [...line.stationIds] })),

@@ -136,6 +136,7 @@ describe("save records", () => {
     const storage = new MemorySaveStorage();
     const payload = validPayload();
     const providers: SaveStateProviders = {
+      getRegion: () => "northNorthTaoyuan",
       getNetwork: () => payload.network,
       getCamera: () => payload.camera,
       getView: () => payload.view,
@@ -143,6 +144,7 @@ describe("save records", () => {
       getStats: () => payload.stats,
     };
     const current = collectSavePayload(providers);
+    expect(current.region).toBe("northNorthTaoyuan");
     const saved = await saveCurrentState(storage, providers, 5678);
     const exported = importSaveJson(serializeSave(saved));
     expect(saved.payload).toEqual(current);
@@ -154,6 +156,7 @@ describe("save records", () => {
     const storage = new MemorySaveStorage();
     const payload = validPayload();
     const providers: SaveStateProviders = {
+      getRegion: () => "northNorth",
       getNetwork: () => payload.network,
       getCamera: () => payload.camera,
       getView: () => "metro",
