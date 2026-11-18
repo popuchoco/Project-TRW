@@ -13,7 +13,7 @@ import { createLineFlowsCache, planLineFlowRequests } from './line-flows-cache';
 import { importSaveFile, triggerSaveDownload } from '../save/import-export';
 import { createSimulationPanels, type SimulationPanels } from './panels';
 import type { AppUi } from './app-shell';
-import { createPassengerRequestHandler } from './passenger-request';
+import { createPassengerRequestHandler, nextPassengerStationId } from './passenger-request';
 
 interface PanelControllerDeps {
   mount: HTMLElement;
@@ -164,11 +164,20 @@ export function createPanelController({
   };
 
   const initializePanels = (cityController: CityController): void => {
+    let followAnotherBaseline: ReturnType<MapRenderer['getFollowPassengerTrip']>;
     const requestPassenger = createPassengerRequestHandler({
       getNetworkVersion: () => cityController.getNetworkVersion(),
       isMetroViewActive: () => Boolean(rendererState.current?.isMetroView),
       getMetroViewRevision: () => metroViewRevision,
-      followPassenger: (trip, gameTime) => cityController.followPassenger(trip, gameTime),
+      followPassenger: (trip, gameTime) => {
+        const baseline = followAnotherBaseline;
+        followAnotherBaseline = undefined;
+        if (baseline?.odKey === trip.odKey && baseline.pathSignature === trip.pathSignature) {
+          showStatus('這條路線上沒有其他代表旅客');
+          return true;
+        }
+        return cityController.followPassenger(trip, gameTime);
+      },
       getGameTime: (client) => client.getStatus().gameTimeMs,
       showStatus,
     });
@@ -196,6 +205,7 @@ export function createPanelController({
       },
       followLine: (lineId) => { cityController.followLine(lineId); },
       followPassenger: (stationId) => {
+        followAnotherBaseline = undefined;
         const transitClient = getTransitClient();
         if (!transitClient) {
           showStatus('模擬尚未啟動，無法跟隨代表旅客。');
@@ -210,6 +220,21 @@ export function createPanelController({
           return;
         }
         if (!cityController.replayPassenger(gameTime)) showStatus('無法重播代表旅客。');
+      },
+      followAnotherPassenger: () => {
+        const currentPassenger = getMapRenderer()?.getFollowPassengerTrip();
+        const stationId = currentPassenger ? nextPassengerStationId(currentPassenger) : undefined;
+        if (!currentPassenger || !stationId) {
+          showStatus('這條路線上沒有其他代表旅客');
+          return;
+        }
+        const transitClient = getTransitClient();
+        if (!transitClient) {
+          showStatus('模擬尚未啟動，無法選擇另一位代表旅客。');
+          return;
+        }
+        followAnotherBaseline = currentPassenger;
+        void requestPassenger(stationId, transitClient);
       },
       closePassengerFollow: () => cityController.closePassengerFollow(),
     });

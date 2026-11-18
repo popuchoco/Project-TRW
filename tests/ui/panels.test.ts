@@ -90,6 +90,7 @@ describe('passenger follow actions', () => {
     try {
       const container = new FakeElement('div');
       const replayPassenger = vi.fn();
+      const followAnotherPassenger = vi.fn();
       const closePassengerFollow = vi.fn();
       const panels = createSimulationPanels(container as unknown as HTMLElement, {
         renameStation: vi.fn(),
@@ -98,6 +99,7 @@ describe('passenger follow actions', () => {
         followLine: vi.fn(),
         followPassenger: vi.fn(),
         replayPassenger,
+        followAnotherPassenger,
         closePassengerFollow,
       });
       const trip: RepresentativePassenger = {
@@ -114,18 +116,20 @@ describe('passenger follow actions', () => {
       const buttons = (): FakeElement[] => descendants(container).filter((node) => node.tagName === 'button');
 
       panels.updateFollowInfo(undefined, trip, new Map(), new Map(), false);
-      const actionButtons = buttons().filter((button) => ['重播', '關閉'].includes(button.textContent));
-      expect(actionButtons.map((button) => button.textContent)).toEqual(['重播', '關閉']);
+      const actionButtons = buttons().filter((button) => ['重播', '選另一位', '關閉'].includes(button.textContent));
+      expect(actionButtons.map((button) => button.textContent)).toEqual(['重播', '選另一位', '關閉']);
       expect(actionButtons.every((button) => button.type === 'button')).toBe(true);
-      expect(actionButtons.map((button) => button.hidden)).toEqual([true, false]);
-      actionButtons[1]?.click();
+      expect(actionButtons.map((button) => button.hidden)).toEqual([true, true, false]);
+      actionButtons[2]?.click();
       expect(closePassengerFollow).toHaveBeenCalledOnce();
 
       panels.updateFollowInfo(undefined, trip, new Map(), new Map(), true);
       expect(descendants(container).some((node) => node.textContent === '行程已結束')).toBe(true);
-      expect(actionButtons.map((button) => button.hidden)).toEqual([false, false]);
+      expect(actionButtons.map((button) => button.hidden)).toEqual([false, false, false]);
       actionButtons[0]?.click();
+      actionButtons[1]?.click();
       expect(replayPassenger).toHaveBeenCalledOnce();
+      expect(followAnotherPassenger).toHaveBeenCalledOnce();
     } finally {
       vi.unstubAllGlobals();
     }

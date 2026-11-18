@@ -72,6 +72,7 @@ export interface PanelCallbacks {
   followLine(lineId: string): void;
   followPassenger(stationId: string): void;
   replayPassenger(): void;
+  followAnotherPassenger(): void;
   closePassengerFollow(): void;
 }
 
@@ -375,10 +376,13 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const replayPassengerButton = element('button', 'source-button', '重播');
   replayPassengerButton.type = 'button';
   replayPassengerButton.addEventListener('click', callbacks.replayPassenger);
+  const followAnotherPassengerButton = element('button', 'source-button', '選另一位');
+  followAnotherPassengerButton.type = 'button';
+  followAnotherPassengerButton.addEventListener('click', callbacks.followAnotherPassenger);
   const closePassengerFollowButton = element('button', 'source-button', '關閉');
   closePassengerFollowButton.type = 'button';
   closePassengerFollowButton.addEventListener('click', callbacks.closePassengerFollow);
-  followActions.append(replayPassengerButton, closePassengerFollowButton);
+  followActions.append(replayPassengerButton, followAnotherPassengerButton, closePassengerFollowButton);
   follow.content.append(followDetails, passengerDetails, followActions);
   follow.section.hidden = true;
   root.append(city.section, station.section, routes.section, follow.section);
@@ -460,6 +464,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     follow.section.hidden = !info && !passenger;
     followDetails.hidden = !info && !(passenger && tripEnded);
     replayPassengerButton.hidden = !passenger || !tripEnded;
+    followAnotherPassengerButton.hidden = !passenger || !tripEnded;
     closePassengerFollowButton.hidden = !info && !passenger;
     passengerDetails.replaceChildren();
     if (passenger) {
