@@ -18,6 +18,7 @@ import { separatePolygonRings } from './polygon-rings';
 import { isRenderFrameActive } from './RenderScheduler';
 import { LABEL_FONT_SIZES, LINE_STYLES, RENDER_PALETTE, STATION_MARKERS } from './tokens';
 import { createEmptyNetwork, haversineKm, isTransferStation, type Network } from '../city/network';
+import { createStationCoordCache } from './station-coords';
 import {
   followCameraTarget,
   passengerPositionAt,
@@ -264,6 +265,8 @@ export class MapRenderer {
   private villageLookup?: VillageGeometryLookup;
   private villageDensityBreaks: number[] = [];
   private network: Network = createEmptyNetwork();
+  private readonly stationCoordCache = createStationCoordCache();
+  private stationCoords = this.stationCoordCache.get(this.network);
   private networkPreview?: Network;
   private stationDailyRidership = new Map<string, number>();
   private stationLabelsDirty = true;
@@ -365,6 +368,7 @@ export class MapRenderer {
 
   setNetwork(network: Network): void {
     this.network = network;
+    this.stationCoords = this.stationCoordCache.get(network);
     this.stationLabelsDirty = true;
     this.trainDirections.clear();
     this.networkPreview = undefined;
@@ -954,12 +958,8 @@ export class MapRenderer {
       this.passengerMarker.visible = false;
       return;
     }
-    const stationCoords = new Map(this.network.stations.map((station) => [
-      station.id,
-      { lon: station.lon, lat: station.lat },
-    ]));
     const elapsedGameMinutes = (this.currentGameTimeMs - following.startGameTime) / 60_000;
-    const position = passengerPositionAt(following.trip, stationCoords, elapsedGameMinutes);
+    const position = passengerPositionAt(following.trip, this.stationCoords, elapsedGameMinutes);
     if (position) {
       this.passengerPosition = [position.lon, position.lat];
       this.positionPassengerMarker();
