@@ -5,6 +5,7 @@ import {
   MAX_NAME_LENGTH,
   MAX_TRAINS_PER_PERIOD,
 } from "../city/limits";
+import { isRegionId } from "../city/regions";
 import { CURRENT_SCHEMA_VERSION, FutureSaveVersionError, SaveValidationError, type SavePayloadV2, type SaveRecord } from "./types";
 import { isTransitWorkerSaveState } from "../sim/protocol";
 
@@ -44,6 +45,10 @@ function requireNonNegativeInteger(value: unknown, field: string, maximum = Numb
 }
 
 function validateV2Payload(value: Record<string, unknown>): asserts value is SavePayloadV2 {
+  if ("region" in value && !isRegionId(value.region)) {
+    throw new SaveValidationError("存檔格式錯誤：payload.region 不是有效的都會範圍。");
+  }
+
   const network = requireRecord(value.network, "payload.network");
   if (!Array.isArray(network.stations) || network.stations.length > MAX_STATIONS) {
     throw new SaveValidationError(`存檔格式錯誤：network.stations 必須是最多 ${MAX_STATIONS} 個車站的陣列。`);

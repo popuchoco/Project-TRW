@@ -55,6 +55,19 @@ describe("save records", () => {
     await expect(loadSave(storage)).resolves.toEqual(written);
   });
 
+  it("accepts legacy payloads without a region and both supported region values", () => {
+    const record = (payload: Record<string, unknown>) => ({ schemaVersion: 2, savedAt: 100, payload });
+    const legacyPayload = validPayload();
+    expect(() => validateSaveRecord(record(legacyPayload))).not.toThrow();
+
+    for (const region of ["northNorth", "northNorthTaoyuan"] as const) {
+      expect(() => validateSaveRecord(record({ ...validPayload(), region }))).not.toThrow();
+    }
+
+    expect(() => validateSaveRecord(record({ ...validPayload(), region: "unknown" })))
+      .toThrow("存檔格式錯誤：payload.region 不是有效的都會範圍。");
+  });
+
   it("migrates v1 saves to an empty v2 network and carries the camera", async () => {
     const storage = new MemorySaveStorage();
     storage.value = {
