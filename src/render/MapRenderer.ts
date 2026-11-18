@@ -18,6 +18,7 @@ import { separatePolygonRings } from './polygon-rings';
 import { isRenderFrameActive } from './RenderScheduler';
 import { LABEL_FONT_SIZES, LINE_STYLES, RENDER_PALETTE, STATION_MARKERS } from './tokens';
 import { createEmptyNetwork, haversineKm, isTransferStation, type Network } from '../city/network';
+import { createStationCoordCache } from './station-coords';
 import {
   followCameraTarget,
   passengerPositionAt,
@@ -35,6 +36,7 @@ import {
 import type { TrainPosition } from '../sim/protocol';
 import {
   placeLabels,
+  StationLabelInvalidator,
   STATION_LABEL_FAR_TOP_N,
   STATION_LABEL_FAR_ZOOM_THRESHOLD,
   STATION_LABEL_GRID_CELL,
@@ -264,17 +266,11 @@ export class MapRenderer {
   private villageLookup?: VillageGeometryLookup;
   private villageDensityBreaks: number[] = [];
   private network: Network = createEmptyNetwork();
+  private readonly stationCoordCache = createStationCoordCache();
+  private stationCoords = this.stationCoordCache.get(this.network);
   private networkPreview?: Network;
   private stationDailyRidership = new Map<string, number>();
-  private stationLabelsDirty = true;
-  private lastStationLabelsLayout?: {
-    network: Network;
-    centerX: number;
-    centerY: number;
-    scale: number;
-    width: number;
-    height: number;
-  };
+  private readonly stationLabelInvalidator = new StationLabelInvalidator();
   private selectedNetworkItem?: NetworkSelection;
   private trainPositions: TrainPosition[] = [];
   private followState: FollowState = { kind: 'idle' };
@@ -365,7 +361,8 @@ export class MapRenderer {
 
   setNetwork(network: Network): void {
     this.network = network;
-    this.stationLabelsDirty = true;
+    this.stationCoords = this.stationCoordCache.get(network);
+    this.stationLabelInvalidator.markNetworkChanged();
     this.trainDirections.clear();
     this.networkPreview = undefined;
     this.drawNetwork();
@@ -376,7 +373,7 @@ export class MapRenderer {
 
   setNetworkPreview(network?: Network): void {
     this.networkPreview = network;
-    this.stationLabelsDirty = true;
+    this.stationLabelInvalidator.markNetworkChanged();
     this.drawNetwork();
     this.updateStationNameLabels();
     this.requestRender();
@@ -393,7 +390,7 @@ export class MapRenderer {
       return;
     }
     this.stationDailyRidership = next;
-    this.stationLabelsDirty = true;
+    this.stationLabelInvalidator.markNetworkChanged();
     this.updateStationNameLabels();
     this.requestRender();
   }
@@ -907,6 +904,13 @@ export class MapRenderer {
   }
 
   private updateCameraDisplay(): void {
+    this.stationLabelInvalidator.markCameraChanged({
+      centerX: this.camera.center.x,
+      centerY: this.camera.center.y,
+      scale: this.camera.scale,
+      width: this.camera.width,
+      height: this.camera.height,
+    });
     const transform = this.camera.rootTransform();
     this.mapRoot.position.set(transform.x, transform.y);
     this.mapRoot.scale.set(this.camera.scale);
@@ -954,12 +958,8 @@ export class MapRenderer {
       this.passengerMarker.visible = false;
       return;
     }
-    const stationCoords = new Map(this.network.stations.map((station) => [
-      station.id,
-      { lon: station.lon, lat: station.lat },
-    ]));
     const elapsedGameMinutes = (this.currentGameTimeMs - following.startGameTime) / 60_000;
-    const position = passengerPositionAt(following.trip, stationCoords, elapsedGameMinutes);
+    const position = passengerPositionAt(following.trip, this.stationCoords, elapsedGameMinutes);
     if (position) {
       this.passengerPosition = [position.lon, position.lat];
       this.positionPassengerMarker();
@@ -1027,15 +1027,7 @@ export class MapRenderer {
     if (!this.metroViewActive) return;
 
     const network = this.networkPreview ?? this.network;
-    const previous = this.lastStationLabelsLayout;
-    if (!this.stationLabelsDirty && previous?.network === network
-      && previous.centerX === this.camera.center.x
-      && previous.centerY === this.camera.center.y
-      && previous.scale === this.camera.scale
-      && previous.width === this.camera.width
-      && previous.height === this.camera.height) {
-      return;
-    }
+    if (!this.stationLabelInvalidator.consume()) return;
 
     const stations = [...network.stations].sort((a, b) => compareText(a.id, b.id));
     const activeIds = new Set(stations.map(({ id }) => id));
@@ -1099,15 +1091,6 @@ export class MapRenderer {
         && top <= this.camera.height && top + label.height >= 0;
     }
 
-    this.lastStationLabelsLayout = {
-      network,
-      centerX: this.camera.center.x,
-      centerY: this.camera.center.y,
-      scale: this.camera.scale,
-      width: this.camera.width,
-      height: this.camera.height,
-    };
-    this.stationLabelsDirty = false;
   }
 
   private rebuildSelection(): void {

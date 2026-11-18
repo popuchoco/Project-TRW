@@ -3,6 +3,7 @@ import { isNonNegativeInteger, isTrainCount, isValidTransitCars, MAX_NAME_LENGTH
 import { SIM_SPEEDS, type SimSpeed } from './clock';
 import type { SimContinuationState, SimSnapshot } from './core';
 import type { TransitSimSerializedState, TransitSummarySnapshot } from './transit';
+import type { LineFlowsData } from './transit/TransitSim';
 import type { QualityScore } from './transit/quality';
 import type { RepresentativePassenger } from './transit/representative';
 
@@ -104,6 +105,12 @@ export interface TransitRequestRepresentativePassengerMessage {
   stationId: string;
 }
 
+export interface TransitRequestLineFlowsMessage {
+  type: 'requestLineFlows';
+  requestId: string;
+  lineId?: string;
+}
+
 export type TransitMainToWorkerMessage = TransitStartMessage
   | TransitSetNetworkMessage
   | TransitPauseMessage
@@ -111,7 +118,8 @@ export type TransitMainToWorkerMessage = TransitStartMessage
   | TransitSetSpeedMessage
   | TransitLoadStateMessage
   | TransitSaveStateMessage
-  | TransitRequestRepresentativePassengerMessage;
+  | TransitRequestRepresentativePassengerMessage
+  | TransitRequestLineFlowsMessage;
 
 export interface TransitSnapshotMessage {
   type: 'snapshot';
@@ -136,6 +144,15 @@ export interface TransitRepresentativePassengerResultMessage {
   passenger: RepresentativePassenger | null;
 }
 
+export interface LineFlowsMessage {
+  type: 'lineFlows';
+  requestId?: string;
+  gameDay: number;
+  periodId: TransitSummarySnapshot['currentPeriodId'];
+  networkVersion: number;
+  lines: LineFlowsData[];
+}
+
 export interface TransitErrorMessage {
   type: 'error';
   message: string;
@@ -146,6 +163,7 @@ export type TransitWorkerToMainMessage = TransitSnapshotMessage
   | TransitSaveStateResultMessage
   | TransitLoadStateResultMessage
   | TransitRepresentativePassengerResultMessage
+  | LineFlowsMessage
   | TransitErrorMessage;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -466,11 +484,19 @@ export function isTransitRequestRepresentativePassengerMessage(
     && typeof value.stationId === 'string' && value.stationId.length > 0 && value.stationId.length <= 200;
 }
 
+export function isTransitRequestLineFlowsMessage(value: unknown): value is TransitRequestLineFlowsMessage {
+  return isRecord(value) && value.type === 'requestLineFlows'
+    && isRequestId(value.requestId)
+    && (value.lineId === undefined
+      || (typeof value.lineId === 'string' && value.lineId.length > 0 && value.lineId.length <= MAX_NAME_LENGTH));
+}
+
 export function isTransitMainToWorkerMessage(value: unknown): value is TransitMainToWorkerMessage {
   return isTransitStartMessage(value) || isTransitSetNetworkMessage(value)
     || isTransitPauseMessage(value) || isTransitResumeMessage(value)
     || isTransitSetSpeedMessage(value) || isTransitLoadStateMessage(value)
-    || isTransitSaveStateMessage(value) || isTransitRequestRepresentativePassengerMessage(value);
+    || isTransitSaveStateMessage(value) || isTransitRequestRepresentativePassengerMessage(value)
+    || isTransitRequestLineFlowsMessage(value);
 }
 
 export function isTransitSnapshotMessage(value: unknown): value is TransitSnapshotMessage {
@@ -494,6 +520,19 @@ export function isTransitRepresentativePassengerResultMessage(
     && (value.passenger === null || isRepresentativePassenger(value.passenger));
 }
 
+export function isTransitLineFlowsMessage(value: unknown): value is LineFlowsMessage {
+  if (!isRecord(value) || value.type !== 'lineFlows'
+    || (value.requestId !== undefined && !isRequestId(value.requestId))
+    || !isNonNegativeInteger(value.gameDay) || !isPeriodId(value.periodId)
+    || !isNonNegativeInteger(value.networkVersion)
+    || !Array.isArray(value.lines) || value.lines.length > 500) return false;
+  return value.lines.every((line: unknown) => isRecord(line)
+    && typeof line.lineId === 'string' && line.lineId.length > 0 && line.lineId.length <= MAX_NAME_LENGTH
+    && isNonNegativeInteger(line.stationCount) && line.stationCount >= 2
+    && isSectionFlow(line.sectionFlow, line.stationCount)
+    && isStationFlows(line.stationFlows, line.stationCount));
+}
+
 export function isTransitErrorMessage(value: unknown): value is TransitErrorMessage {
   return isRecord(value) && value.type === 'error' && typeof value.message === 'string'
     && (value.requestId === undefined || isRequestId(value.requestId));
@@ -502,7 +541,7 @@ export function isTransitErrorMessage(value: unknown): value is TransitErrorMess
 export function isTransitWorkerToMainMessage(value: unknown): value is TransitWorkerToMainMessage {
   return isTransitSnapshotMessage(value) || isTransitSaveStateResultMessage(value)
     || isTransitLoadStateResultMessage(value) || isTransitRepresentativePassengerResultMessage(value)
-    || isTransitErrorMessage(value);
+    || isTransitLineFlowsMessage(value) || isTransitErrorMessage(value);
 }
 
 function isRequestId(value: unknown): value is string {

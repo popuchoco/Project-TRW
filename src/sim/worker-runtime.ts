@@ -15,6 +15,7 @@ import {
   isMainToWorkerMessage,
   isTransitMainToWorkerMessage,
   type MainToWorkerMessage,
+  type LineFlowsMessage,
   type TransitMainToWorkerMessage,
   type TransitWorkerSaveState,
   type TransitWorkerSnapshot,
@@ -42,6 +43,8 @@ export class TransitWorkerRuntime {
   private sequence = 0;
   private paused = true;
   private currentSpeed: SimSpeed = 1;
+  private networkVersion = 0;
+  private lastSentLineFlows?: Pick<LineFlowsMessage, 'gameDay' | 'periodId' | 'networkVersion'>;
 
   constructor(private readonly loadVillages: LoadVillages = loadVillageSource) {}
 
@@ -69,7 +72,16 @@ export class TransitWorkerRuntime {
     if (this.simulation) {
       this.simulation.advance(GAME_MS_PER_SIM_TICK);
       this.sequence += 1;
-      return [this.transitSnapshot()];
+      const snapshotMessage = this.transitSnapshot();
+      const snapshot = snapshotMessage.snapshot;
+      const outputs: WorkerRuntimeOutput[] = [snapshotMessage];
+      if (!this.lastSentLineFlows
+        || this.lastSentLineFlows.gameDay !== snapshot.gameDay
+        || this.lastSentLineFlows.periodId !== snapshot.currentPeriodId
+        || this.lastSentLineFlows.networkVersion !== this.networkVersion) {
+        outputs.push(this.unsolicitedLineFlows());
+      }
+      return outputs;
     }
     if (this.legacyState) {
       this.legacyState = step(this.legacyState);
@@ -96,7 +108,11 @@ export class TransitWorkerRuntime {
       if (!this.simulation) return [];
       this.simulation.setNetwork(message.network);
       this.simulation.refresh();
-      return [this.transitSnapshot()];
+      this.bumpNetworkVersion();
+      return [this.transitSnapshot(), this.unsolicitedLineFlows()];
+    }
+    if (message.type === 'requestLineFlows') {
+      return [this.requestedLineFlows(message.requestId, message.lineId)];
     }
     if (message.type === 'saveState') {
       if (!this.simulation) {
@@ -147,7 +163,8 @@ export class TransitWorkerRuntime {
       this.sequence = 0;
     }
     this.simulation.refresh();
-    return [this.transitSnapshot()];
+    this.bumpNetworkVersion();
+    return [this.transitSnapshot(), this.unsolicitedLineFlows()];
   }
 
   private loadTransitState(requestId: string, state: TransitWorkerSaveState): WorkerRuntimeOutput[] {
@@ -162,13 +179,46 @@ export class TransitWorkerRuntime {
     this.seed = state.seed;
     this.sequence = state.transit.gameTimeMs / GAME_MS_PER_SIM_TICK;
     this.simulation.refresh();
+    this.bumpNetworkVersion();
     return [
       { type: 'loadStateResult', requestId, ok: true },
       this.transitSnapshot(),
+      this.unsolicitedLineFlows(),
     ];
   }
 
-  private transitSnapshot(): TransitWorkerToMainMessage {
+  private bumpNetworkVersion(): void {
+    this.networkVersion += 1;
+    this.lastSentLineFlows = undefined;
+  }
+
+  private requestedLineFlows(requestId: string, lineId?: string): LineFlowsMessage {
+    return this.buildLineFlowsMessage(requestId, lineId);
+  }
+
+  private unsolicitedLineFlows(): LineFlowsMessage {
+    const message = this.buildLineFlowsMessage();
+    this.lastSentLineFlows = {
+      gameDay: message.gameDay,
+      periodId: message.periodId,
+      networkVersion: message.networkVersion,
+    };
+    return message;
+  }
+
+  private buildLineFlowsMessage(requestId?: string, lineId?: string): LineFlowsMessage {
+    const current = this.simulation?.snapshot();
+    return {
+      type: 'lineFlows',
+      ...(requestId === undefined ? {} : { requestId }),
+      gameDay: current?.gameDay ?? 0,
+      periodId: current?.currentPeriodId ?? 'morningPeak',
+      networkVersion: this.networkVersion,
+      lines: this.simulation?.lineFlows(lineId) ?? [],
+    };
+  }
+
+  private transitSnapshot(): Extract<TransitWorkerToMainMessage, { type: 'snapshot' }> {
     const summary = this.simulation!.snapshot();
     const snapshot: TransitWorkerSnapshot = {
       ...summary,

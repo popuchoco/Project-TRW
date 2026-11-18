@@ -12,6 +12,7 @@ import type { TransitWorkerSnapshot } from '../sim/protocol';
 import { importSaveFile, triggerSaveDownload } from '../save/import-export';
 import { createSimulationPanels, type SimulationPanels } from './panels';
 import type { AppUi } from './app-shell';
+import { createPassengerRequestHandler } from './passenger-request';
 
 interface PanelControllerDeps {
   mount: HTMLElement;
@@ -70,6 +71,8 @@ export function createPanelController({
 }: PanelControllerDeps): PanelController {
   let latestTransitSnapshot: TransitWorkerSnapshot | undefined;
   const panelControllerRef: { current?: SimulationPanels } = {};
+  let metroViewActive = Boolean(rendererState.current?.isMetroView);
+  let metroViewRevision = 0;
   const updatePanels = (): void => {
     const selectedNetworkItem = getSelectedNetworkItem();
     panelControllerRef.current?.update(
@@ -84,11 +87,14 @@ export function createPanelController({
     const loadFactor = lineStats?.periods.find(({ periodId }) =>
       periodId === latestTransitSnapshot?.currentPeriodId)?.maxLoadFactor;
     const followedPassenger = getMapRenderer()?.getFollowPassengerTrip();
-    const stationNames = new Map(networkHistory.network.stations.map(({ id, name }) => [id, name]));
+    const network = networkHistory.network;
+    const stationNames = new Map(network.stations.map(({ id, name }) => [id, name]));
+    const lineNames = new Map(network.lines.map(({ id, name }) => [id, name]));
     panelControllerRef.current?.updateFollowInfo(
       followDisplay ? { ...followDisplay, loadFactor } : undefined,
       followedPassenger,
       stationNames,
+      lineNames,
     );
   };
   const saveStateProviders: SaveStateProviders = {
@@ -140,6 +146,14 @@ export function createPanelController({
   };
 
   const initializePanels = (cityController: CityController): void => {
+    const requestPassenger = createPassengerRequestHandler({
+      getNetworkVersion: () => cityController.getNetworkVersion(),
+      isMetroViewActive: () => Boolean(rendererState.current?.isMetroView),
+      getMetroViewRevision: () => metroViewRevision,
+      followPassenger: (trip, gameTime) => cityController.followPassenger(trip, gameTime),
+      getGameTime: (client) => client.getStatus().gameTimeMs,
+      showStatus,
+    });
     panelControllerRef.current = createSimulationPanels(mount, {
       renameStation: (stationId, name) => {
         try {
@@ -169,23 +183,18 @@ export function createPanelController({
           showStatus('模擬尚未啟動，無法跟隨代表旅客。');
           return;
         }
-        void transitClient.requestRepresentativePassenger(stationId).then((trip) => {
-          if (!trip) {
-            showStatus('此站目前沒有代表旅客（尚無經過此站的乘客）。');
-            return;
-          }
-          if (!cityController.followPassenger(trip, transitClient.getStatus().gameTimeMs)) {
-            showStatus('無法跟隨代表旅客。');
-          }
-        }).catch((error: unknown) => {
-          showStatus(error instanceof Error ? error.message : '無法取得代表旅客。');
-        });
+        void requestPassenger(stationId, transitClient);
       },
     });
-    panelControllerRef.current.element.hidden = !rendererState.current?.isMetroView;
+    metroViewActive = Boolean(rendererState.current?.isMetroView);
+    panelControllerRef.current.element.hidden = !metroViewActive;
     updatePanels();
   };
   const setMetroViewActive = (active: boolean): void => {
+    if (metroViewActive !== active) {
+      metroViewActive = active;
+      metroViewRevision += 1;
+    }
     if (panelControllerRef.current) panelControllerRef.current.element.hidden = !active;
   };
   const bindSaveControls = (): void => {
