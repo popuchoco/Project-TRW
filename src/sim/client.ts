@@ -1,15 +1,22 @@
 import { FIXED_TICK_MS, type SimSpeed } from './clock';
 import type { Network } from '../city/network';
+import { MAX_NAME_LENGTH } from '../city/limits';
 import { createSim, resumeSim, type EntityState, type SimContinuationState, type SimSnapshot, type SimState } from './core';
 import { interpolateSnapshots, interpolateTrainSnapshots } from './interpolate';
 import { GAME_MS_PER_SIM_TICK } from './time';
 import type {
   TransitWorkerSaveState,
   TransitWorkerSnapshot,
+  LineFlowsMessage,
   VillageSource,
   WorkerToMainMessage,
 } from './protocol';
-import { isTransitWorkerSaveState, isTransitWorkerToMainMessage, isWorkerToMainMessage } from './protocol';
+import {
+  isTransitLineFlowsMessage,
+  isTransitWorkerSaveState,
+  isTransitWorkerToMainMessage,
+  isWorkerToMainMessage,
+} from './protocol';
 import type { RepresentativePassenger } from './transit/representative';
 
 interface TimedSnapshot {
@@ -42,6 +49,7 @@ export class SimClient {
   private snapshots: TimedSnapshot[] = [];
   private transitSnapshots: Array<{ snapshot: TransitWorkerSnapshot; receivedAt: number }> = [];
   private readonly snapshotSubscribers = new Set<(snapshot: SimClientSnapshot) => void>();
+  private readonly lineFlowsSubscribers = new Set<(message: LineFlowsMessage) => void>();
   private readonly pendingRequests = new Map<string, {
     resolve: (value?: unknown) => void;
     reject: (error: Error) => void;
@@ -63,6 +71,11 @@ export class SimClient {
   subscribe(listener: (snapshot: SimClientSnapshot) => void): () => void {
     this.snapshotSubscribers.add(listener);
     return () => { this.snapshotSubscribers.delete(listener); };
+  }
+
+  subscribeLineFlows(listener: (message: LineFlowsMessage) => void): () => void {
+    this.lineFlowsSubscribers.add(listener);
+    return () => { this.lineFlowsSubscribers.delete(listener); };
   }
 
   start(seed: number, continuation?: SimContinuationState, options: SimStartOptions = {}): void {
@@ -139,6 +152,23 @@ export class SimClient {
         reject,
       });
       this.worker.postMessage({ type: 'requestRepresentativePassenger', requestId, stationId });
+    });
+  }
+
+  requestLineFlows(lineId?: string): Promise<LineFlowsMessage> {
+    if (this.protocol !== 'transit') return Promise.reject(new Error('Transit simulation has not started.'));
+    if (lineId !== undefined && (lineId.length === 0 || lineId.length > MAX_NAME_LENGTH)) {
+      return Promise.reject(new Error('Line id is invalid.'));
+    }
+    const requestId = this.nextRequestId('line-flows');
+    return new Promise<LineFlowsMessage>((resolve, reject) => {
+      this.pendingRequests.set(requestId, {
+        resolve: (message) => isTransitLineFlowsMessage(message)
+          ? resolve(message)
+          : reject(new Error('Worker returned invalid line flows.')),
+        reject,
+      });
+      this.worker.postMessage({ type: 'requestLineFlows', requestId, ...(lineId === undefined ? {} : { lineId }) });
     });
   }
 
@@ -225,6 +255,7 @@ export class SimClient {
     this.worker.removeEventListener('message', this.handleMessage);
     this.worker.terminate();
     this.snapshotSubscribers.clear();
+    this.lineFlowsSubscribers.clear();
     for (const request of this.pendingRequests.values()) request.reject(new Error('Simulation worker was terminated.'));
     this.pendingRequests.clear();
   }
@@ -277,6 +308,14 @@ export class SimClient {
         this.renderAnchorAt = receivedAt;
       }
       this.publishSnapshot(message.snapshot);
+    } else if (message.type === 'lineFlows') {
+      for (const subscriber of this.lineFlowsSubscribers) subscriber(message);
+      if (message.requestId) {
+        const request = this.pendingRequests.get(message.requestId);
+        if (!request) return;
+        this.pendingRequests.delete(message.requestId);
+        request.resolve(message);
+      }
     } else if (message.type === 'representativePassengerResult') {
       const request = this.pendingRequests.get(message.requestId);
       if (!request) return;
@@ -303,7 +342,7 @@ export class SimClient {
     for (const subscriber of this.snapshotSubscribers) subscriber(snapshot);
   }
 
-  private nextRequestId(action: 'save' | 'load' | 'representative'): string {
+  private nextRequestId(action: 'save' | 'load' | 'representative' | 'line-flows'): string {
     this.requestSequence += 1;
     return `${action}-${this.requestSequence}`;
   }

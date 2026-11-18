@@ -140,6 +140,13 @@ export interface LineDailyStats {
   quality: QualityScore | null;
 }
 
+export interface LineFlowsData {
+  lineId: string;
+  stationCount: number;
+  sectionFlow: LineDailyStats['sectionFlow'];
+  stationFlows: LineDailyStats['stationFlows'];
+}
+
 export interface TransitSummarySnapshot {
   gameTimeMs: number;
   gameDay: number;
@@ -521,6 +528,18 @@ export class TransitSim {
     snapshot.pathRecomputeCount = this.recomputeCount;
     snapshot.demandPairCount = this.demand.pairs.length;
     return snapshot;
+  }
+
+  /** Returns copied per-line flow data, optionally for a single line. */
+  lineFlows(lineId?: string): LineFlowsData[] {
+    return this.snapshot().lines
+      .filter((line) => lineId === undefined || line.lineId === lineId)
+      .map(({ lineId: id, stationCount, sectionFlow, stationFlows }) => ({
+        lineId: id,
+        stationCount,
+        sectionFlow,
+        stationFlows,
+      }));
   }
 
   serialize(): TransitSimSerializedState {

@@ -6,9 +6,11 @@ import {
   isTransitErrorMessage,
   isTransitLoadStateMessage,
   isTransitLoadStateResultMessage,
+  isTransitLineFlowsMessage,
   isTransitMainToWorkerMessage,
   isTransitPauseMessage,
   isTransitRequestRepresentativePassengerMessage,
+  isTransitRequestLineFlowsMessage,
   isTransitRepresentativePassengerResultMessage,
   isTransitResumeMessage,
   isTransitSaveStateMessage,
@@ -176,6 +178,14 @@ const startMessage = {
   speed: 2 as const,
 };
 
+const lineFlowsMessage = {
+  type: 'lineFlows',
+  gameDay: 0,
+  periodId: 'morningPeak',
+  networkVersion: 1,
+  lines: [{ lineId: 'l1', stationCount: 2, sectionFlow, stationFlows }],
+};
+
 describe('transit worker protocol guards', () => {
   it.each([
     ['start', isTransitStartMessage, startMessage],
@@ -187,7 +197,13 @@ describe('transit worker protocol guards', () => {
     ['saveState', isTransitSaveStateMessage, { type: 'saveState', requestId: 'save-1' }],
     ['request representative passenger', isTransitRequestRepresentativePassengerMessage,
       { type: 'requestRepresentativePassenger', requestId: 'representative-1', stationId: 's1' }],
+    ['request all line flows', isTransitRequestLineFlowsMessage,
+      { type: 'requestLineFlows', requestId: 'line-flows-1' }],
+    ['request one line flow', isTransitRequestLineFlowsMessage,
+      { type: 'requestLineFlows', requestId: 'line-flows-2', lineId: 'l1' }],
     ['main-to-worker union', isTransitMainToWorkerMessage, startMessage],
+    ['main-to-worker union', isTransitMainToWorkerMessage,
+      { type: 'requestLineFlows', requestId: 'line-flows-1' }],
     ['transit snapshot payload', isTransitWorkerSnapshot, transitSnapshot],
     ['snapshot', isTransitSnapshotMessage, { type: 'snapshot', snapshot: transitSnapshot }],
     ['save state', isTransitWorkerSaveState, saveState],
@@ -197,6 +213,9 @@ describe('transit worker protocol guards', () => {
       { type: 'representativePassengerResult', requestId: 'representative-1', passenger: representativePassenger }],
     ['empty representative passenger result', isTransitRepresentativePassengerResultMessage,
       { type: 'representativePassengerResult', requestId: 'representative-2', passenger: null }],
+    ['line flows payload', isTransitLineFlowsMessage, lineFlowsMessage],
+    ['line flows response', isTransitWorkerToMainMessage, { ...lineFlowsMessage, requestId: 'line-flows-1' }],
+    ['unsolicited line flows', isTransitWorkerToMainMessage, lineFlowsMessage],
     ['error', isTransitErrorMessage, { type: 'error', message: 'worker error', requestId: 'load-1' }],
     ['worker-to-main union', isTransitWorkerToMainMessage, { type: 'snapshot', snapshot: transitSnapshot }],
     ['worker-to-main union', isTransitWorkerToMainMessage,
@@ -215,6 +234,8 @@ describe('transit worker protocol guards', () => {
     ['saveState', isTransitSaveStateMessage, { type: 'saveState', requestId: 5 }],
     ['request representative passenger', isTransitRequestRepresentativePassengerMessage,
       { type: 'requestRepresentativePassenger', requestId: 'representative-1', stationId: '' }],
+    ['request line flows', isTransitRequestLineFlowsMessage,
+      { type: 'requestLineFlows', requestId: 'line-flows-1', lineId: '' }],
     ['main-to-worker union', isTransitMainToWorkerMessage, { type: 'unknown' }],
     ['transit snapshot payload', isTransitWorkerSnapshot, { ...transitSnapshot, seq: -1 }],
     ['snapshot', isTransitSnapshotMessage, { type: 'snapshot', snapshot: undefined }],
@@ -223,10 +244,29 @@ describe('transit worker protocol guards', () => {
     ['load state result', isTransitLoadStateResultMessage, { type: 'loadStateResult', requestId: 'load-1', ok: false }],
     ['representative passenger result', isTransitRepresentativePassengerResultMessage,
       { type: 'representativePassengerResult', requestId: 'representative-1', passenger: { ...representativePassenger, flow: -1 } }],
+    ['line flows payload', isTransitLineFlowsMessage, { ...lineFlowsMessage, networkVersion: -1 }],
     ['error', isTransitErrorMessage, { type: 'error' }],
     ['worker-to-main union', isTransitWorkerToMainMessage, { type: 'unknown' }],
   ])('rejects a malformed %s message', (_name, guard, message) => {
     expect(guard(message)).toBe(false);
+  });
+
+  it('checks line-flow array lengths, ids, and numeric values in both directions', () => {
+    const line = lineFlowsMessage.lines[0]!;
+    const invalidMessages: unknown[] = [
+      { ...lineFlowsMessage, lines: [{ ...line, sectionFlow: { ...sectionFlow, morningPeak: { ...zeroSectionFlow, forward: [] } } }] },
+      { ...lineFlowsMessage, lines: [{ ...line, stationFlows: { ...stationFlows, morningPeak: { ...zeroStationFlow, forward: { boardings: [0], alightings: [0, 0] } } } }] },
+      { ...lineFlowsMessage, lines: [{ ...line, lineId: 'x'.repeat(81) }] },
+      { ...lineFlowsMessage, requestId: 'x'.repeat(201) },
+      { ...lineFlowsMessage, lines: [{ ...line, sectionFlow: { ...sectionFlow, morningPeak: { ...zeroSectionFlow, forward: [{ load: Number.NaN, capacity: 0, loadFactor: 0 }] } } }] },
+      { ...lineFlowsMessage, lines: [{ ...line, stationFlows: { ...stationFlows, morningPeak: { ...zeroStationFlow, forward: { boardings: [0, 0], alightings: [0, Number.NaN] } } } }] },
+    ];
+    for (const message of invalidMessages) expect(isTransitLineFlowsMessage(message)).toBe(false);
+
+    expect(isTransitRequestLineFlowsMessage({ type: 'requestLineFlows', requestId: 'x'.repeat(201) })).toBe(false);
+    expect(isTransitRequestLineFlowsMessage({
+      type: 'requestLineFlows', requestId: 'line-flows-1', lineId: 'x'.repeat(81),
+    })).toBe(false);
   });
 
   it('rejects wrong field types, NaN values, and negative counts at nested levels', () => {
