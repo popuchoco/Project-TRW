@@ -30,6 +30,7 @@ import {
   type WalkAccess,
 } from './graph';
 import { calculateQualityScore, summarizePathCrowding, type QualityScore } from './quality';
+import { addCountyFlow, type CountyFlow } from './cross-city';
 import {
   buildRepresentativeTripPath,
   compareRepresentativeTripRouteKeys,
@@ -179,6 +180,7 @@ interface EquilibriumRoute {
   path: TransitPath;
   desiredTrips: number;
   fareTotal: number;
+  countyFlows: Map<string, CountyFlow>;
 }
 
 interface VillageToStationPath {
@@ -731,8 +733,28 @@ export class TransitSim {
           if (existing) {
             existing.desiredTrips += desiredTrips;
             existing.fareTotal += fareTotal;
+            addCountyFlow(
+              existing.countyFlows,
+              direction.origin.code,
+              direction.destination.code,
+              desiredTrips,
+              fareTotal,
+            );
           } else {
-            rows.set(path.signature, { path, desiredTrips, fareTotal });
+            const route: EquilibriumRoute = {
+              path,
+              desiredTrips,
+              fareTotal,
+              countyFlows: new Map(),
+            };
+            addCountyFlow(
+              route.countyFlows,
+              direction.origin.code,
+              direction.destination.code,
+              desiredTrips,
+              fareTotal,
+            );
+            rows.set(path.signature, route);
           }
           const odKey = `${direction.origin.code}>${direction.destination.code}`;
           const routeOrder = { odKey, flow: desiredTrips, periodId, pathSignature: path.signature };
