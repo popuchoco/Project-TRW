@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createEmptyNetwork, type Network } from '../../src/city/network';
 import { createSim, snapshotOf } from '../../src/sim/core';
+import { LINE_FLOWS_REQUEST_TIMEOUT_MS, SimClient } from '../../src/sim/client';
 import {
   isMainToWorkerMessage,
   isTransitErrorMessage,
@@ -23,6 +24,8 @@ import {
   isTransitWorkerSaveState,
   isTransitWorkerToMainMessage,
   isWorkerToMainMessage,
+  MAX_ID_LENGTH,
+  MAX_NETWORK_LINES,
   type TransitWorkerSaveState,
   type TransitWorkerSnapshot,
 } from '../../src/sim/protocol';
@@ -256,7 +259,7 @@ describe('transit worker protocol guards', () => {
     const invalidMessages: unknown[] = [
       { ...lineFlowsMessage, lines: [{ ...line, sectionFlow: { ...sectionFlow, morningPeak: { ...zeroSectionFlow, forward: [] } } }] },
       { ...lineFlowsMessage, lines: [{ ...line, stationFlows: { ...stationFlows, morningPeak: { ...zeroStationFlow, forward: { boardings: [0], alightings: [0, 0] } } } }] },
-      { ...lineFlowsMessage, lines: [{ ...line, lineId: 'x'.repeat(81) }] },
+      { ...lineFlowsMessage, lines: [{ ...line, lineId: 'x'.repeat(MAX_ID_LENGTH + 1) }] },
       { ...lineFlowsMessage, requestId: 'x'.repeat(201) },
       { ...lineFlowsMessage, lines: [{ ...line, sectionFlow: { ...sectionFlow, morningPeak: { ...zeroSectionFlow, forward: [{ load: Number.NaN, capacity: 0, loadFactor: 0 }] } } }] },
       { ...lineFlowsMessage, lines: [{ ...line, stationFlows: { ...stationFlows, morningPeak: { ...zeroStationFlow, forward: { boardings: [0, 0], alightings: [0, Number.NaN] } } } }] },
@@ -265,8 +268,97 @@ describe('transit worker protocol guards', () => {
 
     expect(isTransitRequestLineFlowsMessage({ type: 'requestLineFlows', requestId: 'x'.repeat(201) })).toBe(false);
     expect(isTransitRequestLineFlowsMessage({
-      type: 'requestLineFlows', requestId: 'line-flows-1', lineId: 'x'.repeat(81),
+      type: 'requestLineFlows', requestId: 'line-flows-1', lineId: 'x'.repeat(MAX_ID_LENGTH + 1),
     })).toBe(false);
+  });
+
+  it('uses the shared network line limit for network and line-flow messages', () => {
+    const line = lineFlowsMessage.lines[0]!;
+    const makeLines = (count: number) => Array.from({ length: count }, (_, index) => ({
+      ...line,
+      lineId: `line-${index}`,
+    }));
+    const networkLines = Array.from({ length: MAX_NETWORK_LINES + 1 }, (_, index) => ({
+      ...network.lines[0]!,
+      id: `line-${index}`,
+    }));
+
+    expect(isTransitLineFlowsMessage({ ...lineFlowsMessage, lines: makeLines(501) })).toBe(true);
+    expect(isTransitLineFlowsMessage({ ...lineFlowsMessage, lines: makeLines(MAX_NETWORK_LINES + 1) })).toBe(false);
+    expect(isTransitSetNetworkMessage({ type: 'setNetwork', network: { ...network, lines: networkLines } })).toBe(false);
+  });
+
+  it('allows ids through 200 characters and rejects longer network and flow ids', () => {
+    const id200 = 'x'.repeat(MAX_ID_LENGTH);
+    const id201 = 'x'.repeat(MAX_ID_LENGTH + 1);
+    const [firstStation, secondStation] = network.stations;
+    const [firstLine] = network.lines;
+    const maxLengthNetwork: Network = {
+      ...network,
+      stations: [{ ...firstStation!, id: id200 }, secondStation!],
+      lines: [{ ...firstLine!, id: id200, stationIds: [id200, secondStation!.id] }],
+    };
+
+    expect(isTransitSetNetworkMessage({ type: 'setNetwork', network: maxLengthNetwork })).toBe(true);
+    expect(isTransitSetNetworkMessage({
+      type: 'setNetwork', network: { ...maxLengthNetwork, stations: [{ ...firstStation!, id: id201 }, secondStation!] },
+    })).toBe(false);
+    expect(isTransitSetNetworkMessage({
+      type: 'setNetwork', network: { ...maxLengthNetwork, lines: [{ ...firstLine!, id: id201 }] },
+    })).toBe(false);
+    expect(isTransitLineFlowsMessage({
+      ...lineFlowsMessage,
+      lines: [{ ...lineFlowsMessage.lines[0]!, lineId: id200 }],
+    })).toBe(true);
+    expect(isTransitLineFlowsMessage({
+      ...lineFlowsMessage,
+      lines: [{ ...lineFlowsMessage.lines[0]!, lineId: id201 }],
+    })).toBe(false);
+    expect(isTransitRequestLineFlowsMessage({ type: 'requestLineFlows', requestId: 'r', lineId: 'x'.repeat(81) })).toBe(true);
+    expect(isTransitRequestLineFlowsMessage({ type: 'requestLineFlows', requestId: 'r', lineId: id200 })).toBe(true);
+    expect(isTransitRequestLineFlowsMessage({ type: 'requestLineFlows', requestId: 'r', lineId: id201 })).toBe(false);
+    expect(isTransitRequestRepresentativePassengerMessage({
+      type: 'requestRepresentativePassenger', requestId: 'r', stationId: id200,
+    })).toBe(true);
+    expect(isTransitRequestRepresentativePassengerMessage({
+      type: 'requestRepresentativePassenger', requestId: 'r', stationId: id201,
+    })).toBe(false);
+  });
+
+  it('rejects a line-flow request when the worker does not answer before the timeout', async () => {
+    class MinimalWorker {
+      static instance: MinimalWorker | undefined;
+      readonly messages: unknown[] = [];
+
+      constructor(...args: unknown[]) {
+        void args;
+        MinimalWorker.instance = this;
+      }
+
+      addEventListener(...args: unknown[]): void { void args; }
+      removeEventListener(...args: unknown[]): void { void args; }
+      postMessage(message: unknown): void { this.messages.push(message); }
+      terminate(): void {}
+    }
+
+    vi.useFakeTimers();
+    vi.stubGlobal('Worker', MinimalWorker);
+    const client = new SimClient(undefined, () => 0);
+    try {
+      client.startTransit(17, { kind: 'data', villages: [...villageSource.villages] }, network);
+      const request = client.requestLineFlows('l1');
+      const rejection = expect(request).rejects.toThrow('Line-flow request timed out.');
+
+      await vi.advanceTimersByTimeAsync(LINE_FLOWS_REQUEST_TIMEOUT_MS);
+      await rejection;
+      expect(MinimalWorker.instance?.messages).toContainEqual(expect.objectContaining({
+        type: 'requestLineFlows', lineId: 'l1',
+      }));
+    } finally {
+      client.destroy();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('rejects wrong field types, NaN values, and negative counts at nested levels', () => {

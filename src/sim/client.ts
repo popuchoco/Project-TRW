@@ -1,6 +1,5 @@
 import { FIXED_TICK_MS, type SimSpeed } from './clock';
 import type { Network } from '../city/network';
-import { MAX_NAME_LENGTH } from '../city/limits';
 import { createSim, resumeSim, type EntityState, type SimContinuationState, type SimSnapshot, type SimState } from './core';
 import { interpolateSnapshots, interpolateTrainSnapshots } from './interpolate';
 import { GAME_MS_PER_SIM_TICK } from './time';
@@ -12,12 +11,15 @@ import type {
   WorkerToMainMessage,
 } from './protocol';
 import {
+  MAX_ID_LENGTH,
   isTransitLineFlowsMessage,
   isTransitWorkerSaveState,
   isTransitWorkerToMainMessage,
   isWorkerToMainMessage,
 } from './protocol';
 import type { RepresentativePassenger } from './transit/representative';
+
+export const LINE_FLOWS_REQUEST_TIMEOUT_MS = 10_000;
 
 interface TimedSnapshot {
   snapshot: SimSnapshot;
@@ -157,16 +159,27 @@ export class SimClient {
 
   requestLineFlows(lineId?: string): Promise<LineFlowsMessage> {
     if (this.protocol !== 'transit') return Promise.reject(new Error('Transit simulation has not started.'));
-    if (lineId !== undefined && (lineId.length === 0 || lineId.length > MAX_NAME_LENGTH)) {
+    if (lineId !== undefined && (lineId.length === 0 || lineId.length > MAX_ID_LENGTH)) {
       return Promise.reject(new Error('Line id is invalid.'));
     }
     const requestId = this.nextRequestId('line-flows');
     return new Promise<LineFlowsMessage>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const request = this.pendingRequests.get(requestId);
+        if (!request) return;
+        this.pendingRequests.delete(requestId);
+        request.reject(new Error('Line-flow request timed out.'));
+      }, LINE_FLOWS_REQUEST_TIMEOUT_MS);
       this.pendingRequests.set(requestId, {
-        resolve: (message) => isTransitLineFlowsMessage(message)
-          ? resolve(message)
-          : reject(new Error('Worker returned invalid line flows.')),
-        reject,
+        resolve: (message) => {
+          clearTimeout(timeout);
+          if (isTransitLineFlowsMessage(message)) resolve(message);
+          else reject(new Error('Worker returned invalid line flows.'));
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
       });
       this.worker.postMessage({ type: 'requestLineFlows', requestId, ...(lineId === undefined ? {} : { lineId }) });
     });
