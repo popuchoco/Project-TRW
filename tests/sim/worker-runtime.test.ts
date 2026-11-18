@@ -126,6 +126,7 @@ describe('TransitWorkerRuntime', () => {
     for (let tick = 0; tick < 1_440; tick += 1) uninterrupted.advanceTick();
     const saved = await saveState(uninterrupted);
     expect(saved.transit.gameTimeMs).toBe(86_400_000);
+    expect(Array.isArray(saved.transit.snapshot.city.countyFlows)).toBe(true);
 
     const restored = new TransitWorkerRuntime();
     await restored.handle({ type: 'start', seed: 0, villages, network: createEmptyNetwork(), paused: true, speed: 4 });
@@ -140,6 +141,18 @@ describe('TransitWorkerRuntime', () => {
       restoredSnapshot = transitSnapshot(restored.advanceTick());
     }
     expect(restoredSnapshot).toEqual(uninterruptedSnapshot);
+  });
+
+  it('loads a P1-2 save whose snapshot has no county flows', async () => {
+    const source = new TransitWorkerRuntime();
+    await source.handle({ type: 'start', seed: 42, villages, network, paused: true });
+    const legacySaved = await saveState(source);
+    delete legacySaved.transit.snapshot.city.countyFlows;
+
+    const restored = new TransitWorkerRuntime();
+    await restored.handle({ type: 'start', seed: 0, villages, network: createEmptyNetwork(), paused: true });
+    const loadResult = await restored.handle({ type: 'loadState', requestId: 'load-p1-2', state: legacySaved });
+    expect(loadResult[0]).toEqual({ type: 'loadStateResult', requestId: 'load-p1-2', ok: true });
   });
 
   it('loads the pre-P1-1e save fixture and recomputes its legacy line flows', async () => {
