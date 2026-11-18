@@ -1,3 +1,5 @@
+import { compareText } from '../compare';
+
 /** Tunable quality-score weights (可調). Keep these in sync with the formulas below. */
 export const QUALITY_WEIGHTS = { wait: 0.3, transfer: 0.2, crowding: 0.3, denied: 0.2 } as const;
 
@@ -28,6 +30,7 @@ export interface QualityScore {
 export interface QualityRawStats {
   averageWaitMinutes: number;
   averageTransfers: number;
+  /** 乘客加權的路徑最高負載率。 */
   averageLoadFactor: number;
   deniedRatio: number;
 }
@@ -36,8 +39,86 @@ export interface QualityMetrics {
   passengerCount: number;
   averageWaitMinutes: number;
   averageTransfers: number;
+  /** 乘客加權的路徑最高負載率。 */
   averageLoadFactor: number;
   deniedRatio: number;
+}
+
+export interface PathCrowdingSample {
+  passengers: number;
+  segments: readonly { lineId: string; loadFactor: number }[];
+}
+
+interface WeightedLoadTotals {
+  weightedLoadFactorTotal: number;
+  passengerCount: number;
+}
+
+function addWeightedLoad(totals: WeightedLoadTotals, loadFactor: number, passengers: number): void {
+  totals.weightedLoadFactorTotal += loadFactor * passengers;
+  totals.passengerCount += passengers;
+}
+
+function averageWeightedLoad(totals: WeightedLoadTotals): {
+  weightedLoadFactor: number;
+  passengerCount: number;
+} {
+  return {
+    weightedLoadFactor: totals.passengerCount === 0
+      ? 0
+      : totals.weightedLoadFactorTotal / totals.passengerCount,
+    passengerCount: totals.passengerCount,
+  };
+}
+
+/** Summarize each passenger path by its highest segment load, also grouped by line. */
+export function summarizePathCrowding(paths: readonly PathCrowdingSample[]): {
+  weightedLoadFactor: number;
+  passengerCount: number;
+  byLine: Map<string, { weightedLoadFactor: number; passengerCount: number }>;
+} {
+  const cityTotals: WeightedLoadTotals = { weightedLoadFactorTotal: 0, passengerCount: 0 };
+  const lineTotals = new Map<string, WeightedLoadTotals>();
+
+  for (const path of paths) {
+    const passengers = requireFinite(path.passengers, 'Path passenger count');
+    if (passengers < 0) throw new RangeError('Path passenger count must be non-negative.');
+
+    let pathMaxLoadFactor: number | undefined;
+    const pathMaxByLine = new Map<string, number>();
+    for (const segment of path.segments) {
+      const loadFactor = requireFinite(segment.loadFactor, 'Path load factor');
+      if (loadFactor < 0) throw new RangeError('Path load factor must be non-negative.');
+
+      pathMaxLoadFactor = pathMaxLoadFactor === undefined
+        ? loadFactor
+        : Math.max(pathMaxLoadFactor, loadFactor);
+      const currentLineMax = pathMaxByLine.get(segment.lineId);
+      if (currentLineMax === undefined || loadFactor > currentLineMax) {
+        pathMaxByLine.set(segment.lineId, loadFactor);
+      }
+    }
+
+    // A path without segment samples has no crowding observation and cannot enter a denominator.
+    if (pathMaxLoadFactor === undefined) continue;
+    addWeightedLoad(cityTotals, pathMaxLoadFactor, passengers);
+
+    for (const [lineId, loadFactor] of pathMaxByLine) {
+      let totals = lineTotals.get(lineId);
+      if (totals === undefined) {
+        totals = { weightedLoadFactorTotal: 0, passengerCount: 0 };
+        lineTotals.set(lineId, totals);
+      }
+      addWeightedLoad(totals, loadFactor, passengers);
+    }
+  }
+
+  const byLine = new Map<string, { weightedLoadFactor: number; passengerCount: number }>();
+  for (const [lineId, totals] of [...lineTotals.entries()].sort(([a], [b]) => compareText(a, b))) {
+    byLine.set(lineId, averageWeightedLoad(totals));
+  }
+
+  return { ...averageWeightedLoad(cityTotals), byLine };
 }
 
 function requireFinite(value: number, metric: string): number {

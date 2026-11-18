@@ -53,13 +53,32 @@ describe('train following', () => {
 
 describe('representative passenger following', () => {
   const following: FollowState = { kind: 'followingPassenger', trip: passenger, startGameTime: 120_000 };
+  const ended: FollowState = { kind: 'passengerTripEnded', trip: passenger, startGameTime: 120_000 };
 
-  it('starts following and stops on drag, Escape, trip completion, or station deletion', () => {
+  it('keeps the trip after it ends and replays the same trip from the new game time', () => {
     expect(followReducer(idle, { type: 'startPassenger', trip: passenger, startGameTime: 120_000 })).toEqual(following);
+    expect(followReducer(following, { type: 'tripFinished' })).toEqual(ended);
+    expect(followReducer(ended, { type: 'replay', startGameTime: 300_000 }))
+      .toEqual({ kind: 'followingPassenger', trip: passenger, startGameTime: 300_000 });
+  });
+
+  it('clears an ended passenger trip on drag, Escape, close, or station deletion', () => {
     for (const event of [
       { type: 'drag' },
       { type: 'escape' },
-      { type: 'tripFinished' },
+      { type: 'close' },
+      { type: 'stationDeleted', stationId: 's3' },
+    ] as const) {
+      expect(followReducer(ended, event)).toEqual(idle);
+    }
+    expect(followReducer(ended, { type: 'stationDeleted', stationId: 'unrelated' })).toBe(ended);
+  });
+
+  it('clears an active passenger follow when dragged, escaped, closed, or a used station is deleted', () => {
+    for (const event of [
+      { type: 'drag' },
+      { type: 'escape' },
+      { type: 'close' },
       { type: 'stationDeleted', stationId: 's3' },
     ] as const) {
       expect(followReducer(following, event)).toEqual(idle);
@@ -75,5 +94,38 @@ describe('representative passenger following', () => {
     expect(passengerPositionAt(passenger, coordinates, 0)).toEqual({ lon: 121, lat: 25 });
     expect(passengerPositionAt(passenger, coordinates, 8)).toEqual({ lon: 121.1, lat: 25.1 });
     expect(passengerPositionAt(passenger, coordinates, 14)).toEqual({ lon: 121.2, lat: 25.2 });
+  });
+
+  it('interpolates a ride along its intermediate stations by distance', () => {
+    const tripWithVia: RepresentativePassenger = {
+      ...passenger,
+      legs: passenger.legs.map((leg) => leg.kind === 'ride'
+        ? { ...leg, viaStationIds: ['s1', 's2', 's3'] }
+        : leg),
+    };
+    const coordinates = new Map([
+      ['s1', { lon: 0, lat: 0 }],
+      ['s2', { lon: 1, lat: 0 }],
+      ['s3', { lon: 1, lat: 1 }],
+    ]);
+
+    const position = passengerPositionAt(tripWithVia, coordinates, 8);
+    expect(position?.lon).toBeCloseTo(1, 2);
+    expect(position?.lat).toBeCloseTo(0, 1);
+  });
+
+  it('falls back to straight interpolation when a via station is missing', () => {
+    const tripWithVia: RepresentativePassenger = {
+      ...passenger,
+      legs: passenger.legs.map((leg) => leg.kind === 'ride'
+        ? { ...leg, viaStationIds: ['s1', 's2', 's3'] }
+        : leg),
+    };
+    const coordinates = new Map([
+      ['s1', { lon: 121, lat: 25 }],
+      ['s3', { lon: 121.2, lat: 25.2 }],
+    ]);
+
+    expect(passengerPositionAt(tripWithVia, coordinates, 8)).toEqual({ lon: 121.1, lat: 25.1 });
   });
 });

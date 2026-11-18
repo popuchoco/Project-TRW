@@ -29,7 +29,7 @@ import {
   type TransitPath,
   type WalkAccess,
 } from './graph';
-import { calculateQualityScore, type QualityScore } from './quality';
+import { calculateQualityScore, summarizePathCrowding, type QualityScore } from './quality';
 import {
   buildRepresentativeTripPath,
   compareRepresentativeTripRouteKeys,
@@ -822,6 +822,10 @@ export class TransitSim {
       const periodConfig = SIMULATION_BALANCE.periods.find(({ id }) => id === period.periodId)!;
       const periodLoads = loadData.find(({ periodId }) => periodId === period.periodId)!;
       const acceptedLoads = new Map<string, number>();
+      const acceptedPathLoads: Array<{
+        passengers: number;
+        segments: Array<{ lineId: string; key: string }>;
+      }> = [];
       const stationFlows = new Map<string, LineStationFlowAccumulator>();
       for (const line of graph.lines) {
         stationFlows.set(line.id, {
@@ -913,12 +917,15 @@ export class TransitSim {
           const station = stationAccumulators.get(transferStationId);
           if (station) station.transfers += accepted;
         }
+        const pathSegments: Array<{ lineId: string; key: string }> = [];
         for (const leg of route.path.legs) {
           for (const segment of leg.segments) {
             const loadKey = segmentKey(segment.lineId, segment.segmentIndex, segment.direction);
             acceptedLoads.set(loadKey, (acceptedLoads.get(loadKey) ?? 0) + accepted);
+            pathSegments.push({ lineId: segment.lineId, key: loadKey });
           }
         }
+        acceptedPathLoads.push({ passengers: accepted, segments: pathSegments });
       }
 
       for (const line of graph.lines) {
@@ -931,17 +938,26 @@ export class TransitSim {
             const load = acceptedLoads.get(loadKey) ?? 0;
             const loadFactor = periodCapacity > 0 ? load / periodCapacity : 0;
             if (periodCapacity > 0) maxFactor = Math.max(maxFactor, loadFactor);
-            if (load > 0) {
-              cityQuality.weightedLoadFactor += load * loadFactor;
-              cityQuality.loadFactorPassengers += load;
-              const lineAccumulator = lineQuality.get(line.id)!;
-              lineAccumulator.weightedLoadFactor += load * loadFactor;
-              lineAccumulator.loadFactorPassengers += load;
-            }
           }
         }
         maxFactors.set(line.id, maxFactor);
         operatingCost += periodLoads.operatingCostByLine.get(line.id) ?? 0;
+      }
+      const crowding = summarizePathCrowding(acceptedPathLoads.map((path) => ({
+        passengers: path.passengers,
+        segments: path.segments.map(({ lineId, key }) => {
+          const capacity = periodLoads.periodCapacityBySegment.get(key) ?? 0;
+          const load = acceptedLoads.get(key) ?? 0;
+          return { lineId, loadFactor: capacity > 0 ? load / capacity : 0 };
+        }),
+      })));
+      cityQuality.weightedLoadFactor += crowding.weightedLoadFactor * crowding.passengerCount;
+      cityQuality.loadFactorPassengers += crowding.passengerCount;
+      for (const [lineId, lineCrowding] of crowding.byLine) {
+        const accumulator = lineQuality.get(lineId);
+        if (!accumulator) continue;
+        accumulator.weightedLoadFactor += lineCrowding.weightedLoadFactor * lineCrowding.passengerCount;
+        accumulator.loadFactorPassengers += lineCrowding.passengerCount;
       }
       const sectionFlows = new Map<string, LineSectionFlowPeriod>();
       for (const line of graph.lines) {

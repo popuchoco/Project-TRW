@@ -130,7 +130,7 @@ export function createCityController({
     if (followedLineId && !network.lines.some(({ id }) => id === followedLineId)) {
       transitionFollow({ type: 'lineDeleted', lineId: followedLineId });
     }
-    if (followState.kind === 'followingPassenger') {
+    if (followState.kind === 'followingPassenger' || followState.kind === 'passengerTripEnded') {
       const trip = followState.trip;
       const tripStationIds = [trip.selectedStationId, trip.startStationId, trip.endStationId];
       for (const leg of trip.legs) {

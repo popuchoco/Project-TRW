@@ -10,6 +10,7 @@ import { MAX_NAME_LENGTH } from '../city/limits';
 import type { FollowTrainInfo } from '../city/follow';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
 import type { TransitSummarySnapshot } from '../sim/transit';
+import type { LineFlowsData } from '../sim/transit/TransitSim';
 import type { RepresentativePassenger } from '../sim/transit/representative';
 import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
 import {
@@ -74,7 +75,12 @@ export interface PanelCallbacks {
 
 export interface SimulationPanels {
   element: HTMLElement;
-  update(network: Network, snapshot: TransitSummarySnapshot | undefined, selectedStationId?: string): void;
+  update(
+    network: Network,
+    snapshot: TransitSummarySnapshot | undefined,
+    selectedStationId?: string,
+    getLineFlows?: (lineId: string) => LineFlowsData | undefined,
+  ): void;
   updateFollowInfo(
     info: FollowTrainInfo | undefined,
     passenger?: RepresentativePassenger,
@@ -263,7 +269,13 @@ function cardsSetLineInputs(
   }
 }
 
-function updateLineCard(card: LineCard, line: Line, network: Network, snapshot: TransitSummarySnapshot | undefined): void {
+function updateLineCard(
+  card: LineCard,
+  line: Line,
+  network: Network,
+  snapshot: TransitSummarySnapshot | undefined,
+  getLineFlows?: (lineId: string) => LineFlowsData | undefined,
+): void {
   const modeDefinition = TRANSIT_MODES[line.mode];
   const lineStats = snapshot?.lines.find((candidate) => candidate.lineId === line.id);
   card.title.textContent = line.name;
@@ -293,7 +305,7 @@ function updateLineCard(card: LineCard, line: Line, network: Network, snapshot: 
     : 0)}`;
   card.qualityPanel.update(lineStats?.quality ?? null, lineStats?.quality?.metrics ?? null);
   // Older saved snapshots may lack section flow; the chart then shows its empty state.
-  const sectionFlow = sectionFlowFromSnapshot(lineStats?.sectionFlow);
+  const sectionFlow = sectionFlowFromSnapshot(getLineFlows?.(line.id)?.sectionFlow ?? lineStats?.sectionFlow);
   const stationNames = line.stationIds.map((stationId) => network.stations.find(({ id }) => id === stationId)?.name ?? stationId);
   card.sectionFlowChart.update(sectionFlow, stationNames);
 }
@@ -363,7 +375,12 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   container.append(root);
 
   const lineCards = new Map<string, LineCard>();
-  const update = (network: Network, snapshot: TransitSummarySnapshot | undefined, selectedStationId?: string): void => {
+  const update = (
+    network: Network,
+    snapshot: TransitSummarySnapshot | undefined,
+    selectedStationId?: string,
+    getLineFlows?: (lineId: string) => LineFlowsData | undefined,
+  ): void => {
     const cityStats = snapshot?.city;
     cityRidership.value.textContent = `${formatPanelCount(cityStats?.dailyRidership ?? 0)} 人`;
     cityShare.value.textContent = formatPanelPercent(cityStats?.transitShare ?? 0);
@@ -418,7 +435,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
         lineCards.set(line.id, card);
         lineCardsContainer.append(card.element);
       }
-      updateLineCard(card, line, network, snapshot);
+      updateLineCard(card, line, network, snapshot, getLineFlows);
     }
     routes.section.hidden = network.lines.length === 0;
   };

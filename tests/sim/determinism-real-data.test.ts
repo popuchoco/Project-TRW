@@ -54,12 +54,21 @@ async function representative(runtime: TransitWorkerRuntime, stationId: string):
 /** Quality, section flow and representative passenger must all be present before comparing them. */
 async function derived(runtime: TransitWorkerRuntime, snapshot: TransitWorkerSnapshot | undefined): Promise<unknown> {
   const metro = snapshot?.lines.find(({ lineId }) => lineId === 'l13');
+  const flowOutputs = await runtime.handle({ type: 'requestLineFlows', requestId: 'flows', lineId: 'l13' });
+  const lineFlows = flowOutputs.find((message) => message.type === 'lineFlows')?.lines[0];
   expect(snapshot?.city.quality).not.toBeNull();
   expect(metro?.quality).not.toBeNull();
-  expect(metro?.sectionFlow).toBeDefined();
+  expect(lineFlows?.sectionFlow).toBeDefined();
+  expect(lineFlows?.stationFlows).toBeDefined();
   const passengers = await Promise.all(['s1', 's5', 's11'].map((stationId) => representative(runtime, stationId)));
   expect(passengers[1]).toBeTruthy();
-  return { cityQuality: snapshot?.city.quality, lineQuality: metro?.quality, sectionFlow: metro?.sectionFlow, passengers };
+  return {
+    cityQuality: snapshot?.city.quality,
+    lineQuality: metro?.quality,
+    sectionFlow: lineFlows?.sectionFlow,
+    stationFlows: lineFlows?.stationFlows,
+    passengers,
+  };
 }
 
 async function runScripted(runtime: TransitWorkerRuntime, ticks: number, editAt: number): Promise<TransitWorkerSnapshot | undefined> {

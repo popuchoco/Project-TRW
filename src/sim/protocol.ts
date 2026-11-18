@@ -7,6 +7,9 @@ import type { LineFlowsData } from './transit/TransitSim';
 import type { QualityScore } from './transit/quality';
 import type { RepresentativePassenger } from './transit/representative';
 
+export const MAX_NETWORK_LINES = 1_000;
+export const MAX_ID_LENGTH = 200;
+
 export interface LegacyStartMessage {
   type: 'start';
   seed: number;
@@ -221,12 +224,13 @@ function isVillageSource(value: unknown): value is VillageSource {
 
 function isNetwork(value: unknown): value is Network {
   if (!isRecord(value) || !Array.isArray(value.stations) || value.stations.length > 10_000
-    || !Array.isArray(value.lines) || value.lines.length > 1_000
+    || !Array.isArray(value.lines) || value.lines.length > MAX_NETWORK_LINES
     || !isNonNegativeInteger(value.nextId) || value.nextId < 1) return false;
 
   const stationIds = new Set<string>();
   for (const station of value.stations) {
     if (!isRecord(station) || typeof station.id !== 'string' || station.id.length === 0
+      || station.id.length > MAX_ID_LENGTH
       || stationIds.has(station.id) || typeof station.name !== 'string' || station.name.length > MAX_NAME_LENGTH
       || !isFiniteNumber(station.lon) || station.lon < -180 || station.lon > 180
       || !isFiniteNumber(station.lat) || station.lat < -90 || station.lat > 90
@@ -236,7 +240,8 @@ function isNetwork(value: unknown): value is Network {
 
   const lineIds = new Set<string>();
   for (const line of value.lines) {
-    if (!isRecord(line) || typeof line.id !== 'string' || line.id.length === 0 || lineIds.has(line.id)
+    if (!isRecord(line) || typeof line.id !== 'string' || line.id.length === 0
+      || line.id.length > MAX_ID_LENGTH || lineIds.has(line.id)
       || (line.mode !== 'brt' && line.mode !== 'metro') || !Array.isArray(line.stationIds)
       || line.stationIds.length < 2 || !line.stationIds.every((id: unknown) => typeof id === 'string' && stationIds.has(id))
       || new Set(line.stationIds).size !== line.stationIds.length
@@ -414,10 +419,17 @@ export function isTransitWorkerSnapshot(value: unknown): value is TransitWorkerS
 function isPassengerLeg(value: unknown): boolean {
   if (!isRecord(value) || !['walkIn', 'wait', 'ride', 'transfer', 'walkOut'].some((kind) => kind === value.kind)
     || !isNonNegativeNumber(value.minutes)) return false;
-  return ['lineId', 'fromStationId', 'toStationId'].every((key) => {
+  const validStationFields = ['lineId', 'fromStationId', 'toStationId'].every((key) => {
     const field = value[key];
     return field === undefined || (typeof field === 'string' && field.length > 0 && field.length <= 200);
   });
+  if (!validStationFields) return false;
+  const viaStationIds = value.viaStationIds;
+  return viaStationIds === undefined || (value.kind === 'ride'
+    && Array.isArray(viaStationIds)
+    && viaStationIds.length >= 2 && viaStationIds.length <= 200
+    && viaStationIds.every((stationId: unknown) => typeof stationId === 'string'
+      && stationId.length > 0 && stationId.length <= MAX_ID_LENGTH));
 }
 
 function isRepresentativePassenger(value: unknown): value is RepresentativePassenger {
@@ -481,14 +493,14 @@ export function isTransitRequestRepresentativePassengerMessage(
 ): value is TransitRequestRepresentativePassengerMessage {
   return isRecord(value) && value.type === 'requestRepresentativePassenger'
     && isRequestId(value.requestId)
-    && typeof value.stationId === 'string' && value.stationId.length > 0 && value.stationId.length <= 200;
+    && typeof value.stationId === 'string' && value.stationId.length > 0 && value.stationId.length <= MAX_ID_LENGTH;
 }
 
 export function isTransitRequestLineFlowsMessage(value: unknown): value is TransitRequestLineFlowsMessage {
   return isRecord(value) && value.type === 'requestLineFlows'
     && isRequestId(value.requestId)
     && (value.lineId === undefined
-      || (typeof value.lineId === 'string' && value.lineId.length > 0 && value.lineId.length <= MAX_NAME_LENGTH));
+      || (typeof value.lineId === 'string' && value.lineId.length > 0 && value.lineId.length <= MAX_ID_LENGTH));
 }
 
 export function isTransitMainToWorkerMessage(value: unknown): value is TransitMainToWorkerMessage {
@@ -525,9 +537,9 @@ export function isTransitLineFlowsMessage(value: unknown): value is LineFlowsMes
     || (value.requestId !== undefined && !isRequestId(value.requestId))
     || !isNonNegativeInteger(value.gameDay) || !isPeriodId(value.periodId)
     || !isNonNegativeInteger(value.networkVersion)
-    || !Array.isArray(value.lines) || value.lines.length > 500) return false;
+    || !Array.isArray(value.lines) || value.lines.length > MAX_NETWORK_LINES) return false;
   return value.lines.every((line: unknown) => isRecord(line)
-    && typeof line.lineId === 'string' && line.lineId.length > 0 && line.lineId.length <= MAX_NAME_LENGTH
+    && typeof line.lineId === 'string' && line.lineId.length > 0 && line.lineId.length <= MAX_ID_LENGTH
     && isNonNegativeInteger(line.stationCount) && line.stationCount >= 2
     && isSectionFlow(line.sectionFlow, line.stationCount)
     && isStationFlows(line.stationFlows, line.stationCount));
