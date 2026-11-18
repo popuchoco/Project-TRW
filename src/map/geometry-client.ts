@@ -8,6 +8,11 @@ type GeometryResponse =
   | { type: 'loaded'; requestId: number; geometry: VillageGeometryData }
   | { type: 'error'; requestId: number; message: string };
 
+interface GeometryPart {
+  topologyUrl: string;
+  attributesUrl: string;
+}
+
 interface PendingLoad {
   resolve: (geometry: VillageGeometryData) => void;
   reject: (error: Error) => void;
@@ -45,6 +50,17 @@ function isGeometryData(value: unknown): value is VillageGeometryData {
       : village.densityPerKm2 === null));
 }
 
+function hasValidParts(value: unknown): value is readonly GeometryPart[] {
+  return Array.isArray(value)
+    && value.length >= 1
+    && value.length <= 8
+    && value.every((part: unknown) => {
+      if (typeof part !== 'object' || part === null) return false;
+      const urls = part as Record<string, unknown>;
+      return typeof urls.topologyUrl === 'string' && typeof urls.attributesUrl === 'string';
+    });
+}
+
 /** Thin request client; geometry decoding and projection stay inside the worker. */
 export class VillageGeometryClient {
   private nextRequestId = 0;
@@ -59,11 +75,18 @@ export class VillageGeometryClient {
   }
 
   load(topologyUrl: string, attributesUrl: string): Promise<VillageGeometryData> {
+    return this.loadParts([{ topologyUrl, attributesUrl }]);
+  }
+
+  loadParts(parts: readonly GeometryPart[]): Promise<VillageGeometryData> {
+    if (!hasValidParts(parts)) {
+      return Promise.reject(new Error('Village geometry requires 1 to 8 valid parts.'));
+    }
     const requestId = ++this.nextRequestId;
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
       try {
-        this.worker.postMessage({ type: 'load', requestId, topologyUrl, attributesUrl });
+        this.worker.postMessage({ type: 'load', requestId, parts });
       } catch (error) {
         this.pending.delete(requestId);
         reject(error instanceof Error ? error : new Error('Could not request village geometry.'));

@@ -1,11 +1,15 @@
-import { decodeVillageGeometry, type VillageGeometryAttribute, type VillageGeometryData } from './village-geometry';
+import { decodeVillageGeometry, mergeVillageGeometry, type VillageGeometryAttribute, type VillageGeometryData } from './village-geometry';
 import type { Topology } from './types';
+
+interface GeometryPartRequest {
+  topologyUrl: string;
+  attributesUrl: string;
+}
 
 interface GeometryRequest {
   type: 'load';
   requestId: number;
-  topologyUrl: string;
-  attributesUrl: string;
+  parts: GeometryPartRequest[];
 }
 
 type GeometryResponse =
@@ -20,10 +24,17 @@ interface GeometryWorkerScope {
 function isGeometryRequest(value: unknown): value is GeometryRequest {
   if (typeof value !== 'object' || value === null) return false;
   const request = value as Record<string, unknown>;
+  const parts = request.parts;
   return request.type === 'load'
     && Number.isSafeInteger(request.requestId)
-    && typeof request.topologyUrl === 'string'
-    && typeof request.attributesUrl === 'string';
+    && Array.isArray(parts)
+    && parts.length >= 1
+    && parts.length <= 8
+    && parts.every((part: unknown) => {
+      if (typeof part !== 'object' || part === null) return false;
+      const urls = part as Record<string, unknown>;
+      return typeof urls.topologyUrl === 'string' && typeof urls.attributesUrl === 'string';
+    });
 }
 
 async function readJson<T>(url: string): Promise<T> {
@@ -36,12 +47,15 @@ const workerScope = globalThis as unknown as GeometryWorkerScope;
 
 workerScope.onmessage = (event: MessageEvent<unknown>): void => {
   if (!isGeometryRequest(event.data)) return;
-  const { requestId, topologyUrl, attributesUrl } = event.data;
-  void Promise.all([
-    readJson<Topology>(topologyUrl),
-    readJson<VillageGeometryAttribute[]>(attributesUrl),
-  ]).then(([topology, attributes]) => {
-    const geometry = decodeVillageGeometry(topology, attributes);
+  const { requestId, parts } = event.data;
+  void Promise.all(parts.map(async ({ topologyUrl, attributesUrl }) => {
+    const [topology, attributes] = await Promise.all([
+      readJson<Topology>(topologyUrl),
+      readJson<VillageGeometryAttribute[]>(attributesUrl),
+    ]);
+    return decodeVillageGeometry(topology, attributes);
+  })).then((decodedParts) => {
+    const geometry = mergeVillageGeometry(decodedParts);
     workerScope.postMessage({ type: 'loaded', requestId, geometry }, [
       geometry.coords.buffer as ArrayBuffer,
       geometry.ringOffsets.buffer as ArrayBuffer,
