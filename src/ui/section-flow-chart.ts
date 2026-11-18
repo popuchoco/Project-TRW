@@ -32,6 +32,8 @@ export type SectionFlowColorBand = keyof typeof SECTION_FLOW_COLORS;
 
 export interface SectionFlowSegment {
   loadFactor: number;
+  load?: number;
+  capacity?: number;
 }
 
 export interface SectionFlowDirection {
@@ -54,12 +56,17 @@ export interface SectionFlowChartBar {
   colorBand: SectionFlowColorBand;
   dir: SectionFlowDirectionId;
   segmentIndex: number;
+  loadFactor: number;
+  load?: number;
+  capacity?: number;
 }
 
 export interface SectionFlowMaxSegment {
   dir: SectionFlowDirectionId;
   segmentIndex: number;
   loadFactor: number;
+  load?: number;
+  capacity?: number;
 }
 
 export interface SectionFlowChartModel {
@@ -86,8 +93,22 @@ export function sectionFlowFromSnapshot(flow: SnapshotSectionFlow | undefined): 
   for (const periodId of Object.keys(flow) as SimulationPeriodId[]) {
     const period = flow[periodId];
     result[periodId] = [
-      { direction: 1, segments: period.forward.map(({ loadFactor }) => ({ loadFactor })) },
-      { direction: -1, segments: period.backward.map(({ loadFactor }) => ({ loadFactor })) },
+      {
+        direction: 1,
+        segments: period.forward.map(({ loadFactor, load, capacity }) => ({
+          loadFactor,
+          ...(load === undefined ? {} : { load }),
+          ...(capacity === undefined ? {} : { capacity }),
+        })),
+      },
+      {
+        direction: -1,
+        segments: period.backward.map(({ loadFactor, load, capacity }) => ({
+          loadFactor,
+          ...(load === undefined ? {} : { load }),
+          ...(capacity === undefined ? {} : { capacity }),
+        })),
+      },
     ];
   }
   return result;
@@ -128,7 +149,8 @@ export function buildSectionFlowChart(
       + directionRow * (directionHeight + SECTION_FLOW_CHART_TUNING.directionGap);
     const baselineY = rowY + directionHeight;
     for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
-      const rawLoadFactor = directionFlow?.segments[segmentIndex]?.loadFactor ?? 0;
+      const segment = directionFlow?.segments[segmentIndex];
+      const rawLoadFactor = segment?.loadFactor ?? 0;
       const loadFactor = Number.isFinite(rawLoadFactor) ? Math.max(0, rawLoadFactor) : 0;
       const barHeight = directionHeight * Math.min(1, loadFactor / maximumVisualLoadFactor);
       bars.push({
@@ -139,11 +161,20 @@ export function buildSectionFlowChart(
         colorBand: loadColorBand(loadFactor),
         dir,
         segmentIndex,
+        loadFactor,
+        ...(segment?.load === undefined ? {} : { load: segment.load }),
+        ...(segment?.capacity === undefined ? {} : { capacity: segment.capacity }),
       });
 
       if (!maxSegment || loadFactor > maxSegment.loadFactor
         || (loadFactor === maxSegment.loadFactor && segmentIndex < maxSegment.segmentIndex)) {
-        maxSegment = { dir, segmentIndex, loadFactor };
+        maxSegment = {
+          dir,
+          segmentIndex,
+          loadFactor,
+          ...(segment?.load === undefined ? {} : { load: segment.load }),
+          ...(segment?.capacity === undefined ? {} : { capacity: segment.capacity }),
+        };
       }
     }
   }
@@ -167,6 +198,7 @@ export function renderSectionFlowChartSvg(
   documentRef: Document,
   model: SectionFlowChartModel,
   size: SectionFlowChartSize,
+  stationNames: readonly string[] = model.labels,
 ): SVGSVGElement {
   const svg = documentRef.createElementNS(SVG_NAMESPACE, 'svg');
   svg.setAttribute('class', 'section-flow-svg');
@@ -204,7 +236,7 @@ export function renderSectionFlowChartSvg(
     rect.setAttribute('rx', '1.5');
     rect.setAttribute('data-direction', String(bar.dir));
     rect.setAttribute('data-segment-index', String(bar.segmentIndex));
-    const title = svgElement(documentRef, 'title', '', `${bar.dir === 1 ? '往' : '返'}向第 ${bar.segmentIndex + 1} 區間`);
+    const title = svgElement(documentRef, 'title', '', sectionFlowBarTitle(bar, stationNames));
     rect.append(title);
     svg.append(rect);
   }
@@ -223,11 +255,29 @@ export function renderSectionFlowChartSvg(
   return svg;
 }
 
-function maxSegmentText(maxSegment: SectionFlowMaxSegment | null, stationNames: readonly string[]): string {
+function stationName(stationNames: readonly string[], index: number): string {
+  return stationNames[index] ?? `第 ${index + 1} 站`;
+}
+
+function formattedCount(value: number | undefined): string {
+  return value === undefined || !Number.isFinite(value) ? '—' : value.toLocaleString('zh-TW');
+}
+
+function sectionFlowMetrics(loadFactor: number, load?: number, capacity?: number): string {
+  return `載客 ${formattedCount(load)}／運能 ${formattedCount(capacity)}（${(loadFactor * 100).toFixed(1)}%）模擬值`;
+}
+
+export function sectionFlowBarTitle(bar: SectionFlowChartBar, stationNames: readonly string[]): string {
+  const from = stationName(stationNames, bar.dir === 1 ? bar.segmentIndex : bar.segmentIndex + 1);
+  const to = stationName(stationNames, bar.dir === 1 ? bar.segmentIndex + 1 : bar.segmentIndex);
+  return `${bar.dir === 1 ? '往' : '返'}向 ${from}→${to}：${sectionFlowMetrics(bar.loadFactor, bar.load, bar.capacity)}`;
+}
+
+export function maxSegmentText(maxSegment: SectionFlowMaxSegment | null, stationNames: readonly string[]): string {
   if (!maxSegment) return '最高負載區間：—';
-  const start = stationNames[maxSegment.segmentIndex] ?? `第 ${maxSegment.segmentIndex + 1} 站`;
-  const end = stationNames[maxSegment.segmentIndex + 1] ?? `第 ${maxSegment.segmentIndex + 2} 站`;
-  return `最高負載區間：${start}－${end}（${maxSegment.dir === 1 ? '往' : '返'}向，${(maxSegment.loadFactor * 100).toFixed(1)}%）`;
+  const from = stationName(stationNames, maxSegment.dir === 1 ? maxSegment.segmentIndex : maxSegment.segmentIndex + 1);
+  const to = stationName(stationNames, maxSegment.dir === 1 ? maxSegment.segmentIndex + 1 : maxSegment.segmentIndex);
+  return `最高負載區間：${from}→${to}（${maxSegment.dir === 1 ? '往' : '返'}向）${sectionFlowMetrics(maxSegment.loadFactor, maxSegment.load, maxSegment.capacity)}`;
 }
 
 export function createSectionFlowChart(documentRef: Document = document): SectionFlowChartRenderer {
@@ -294,7 +344,7 @@ export function createSectionFlowChart(documentRef: Document = document): Sectio
     const model = buildSectionFlowChart(currentFlow, currentStationNames, periodSelect.value as SimulationPeriodId, size);
     maximum.textContent = maxSegmentText(model.maxSegment, currentStationNames);
     emptyState.hidden = true;
-    graphic.replaceChildren(renderSectionFlowChartSvg(documentRef, model, size));
+    graphic.replaceChildren(renderSectionFlowChartSvg(documentRef, model, size, currentStationNames));
   };
   periodSelect.addEventListener('change', render);
 
