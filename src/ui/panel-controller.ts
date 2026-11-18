@@ -13,7 +13,7 @@ import { createLineFlowsCache, planLineFlowRequests } from './line-flows-cache';
 import { importSaveFile, triggerSaveDownload } from '../save/import-export';
 import { createSimulationPanels, type SimulationPanels } from './panels';
 import type { AppUi } from './app-shell';
-import { createPassengerRequestHandler, nextPassengerStationId } from './passenger-request';
+import { createFollowAnotherGuard, createPassengerRequestHandler, nextPassengerStationId } from './passenger-request';
 
 interface PanelControllerDeps {
   mount: HTMLElement;
@@ -164,15 +164,14 @@ export function createPanelController({
   };
 
   const initializePanels = (cityController: CityController): void => {
-    let followAnotherBaseline: ReturnType<MapRenderer['getFollowPassengerTrip']>;
+    const followAnotherGuard = createFollowAnotherGuard();
+    let followAnotherToken: number | undefined;
     const requestPassenger = createPassengerRequestHandler({
       getNetworkVersion: () => cityController.getNetworkVersion(),
       isMetroViewActive: () => Boolean(rendererState.current?.isMetroView),
       getMetroViewRevision: () => metroViewRevision,
       followPassenger: (trip, gameTime) => {
-        const baseline = followAnotherBaseline;
-        followAnotherBaseline = undefined;
-        if (baseline?.odKey === trip.odKey && baseline.pathSignature === trip.pathSignature) {
+        if (followAnotherToken !== undefined && followAnotherGuard.isSamePassenger(followAnotherToken, trip)) {
           showStatus('這條路線上沒有其他代表旅客');
           return true;
         }
@@ -205,7 +204,8 @@ export function createPanelController({
       },
       followLine: (lineId) => { cityController.followLine(lineId); },
       followPassenger: (stationId) => {
-        followAnotherBaseline = undefined;
+        followAnotherGuard.clear();
+        followAnotherToken = undefined;
         const transitClient = getTransitClient();
         if (!transitClient) {
           showStatus('模擬尚未啟動，無法跟隨代表旅客。');
@@ -233,8 +233,12 @@ export function createPanelController({
           showStatus('模擬尚未啟動，無法選擇另一位代表旅客。');
           return;
         }
-        followAnotherBaseline = currentPassenger;
-        void requestPassenger(stationId, transitClient);
+        const token = followAnotherGuard.begin(currentPassenger);
+        followAnotherToken = token;
+        void requestPassenger(stationId, transitClient).finally(() => {
+          followAnotherGuard.end(token);
+          if (followAnotherToken === token) followAnotherToken = undefined;
+        });
       },
       closePassengerFollow: () => cityController.closePassengerFollow(),
     });

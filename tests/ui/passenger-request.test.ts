@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RepresentativePassenger } from '../../src/sim/transit/representative';
-import { createPassengerRequestHandler, nextPassengerStationId } from '../../src/ui/passenger-request';
+import { createFollowAnotherGuard, createPassengerRequestHandler, nextPassengerStationId } from '../../src/ui/passenger-request';
 
 const trip: RepresentativePassenger = {
   selectedStationId: 's1',
@@ -13,6 +13,44 @@ const trip: RepresentativePassenger = {
   doorToDoorMinutes: 10,
   alternativeMinutes: null,
 };
+
+describe('follow another passenger guard', () => {
+  it('recognizes the same passenger by OD and path signature', () => {
+    const guard = createFollowAnotherGuard();
+    const token = guard.begin(trip);
+
+    expect(guard.isSamePassenger(token, { ...trip })).toBe(true);
+  });
+
+  it('recognizes a different passenger when the OD or path signature differs', () => {
+    const guard = createFollowAnotherGuard();
+    const token = guard.begin(trip);
+
+    expect(guard.isSamePassenger(token, { ...trip, pathSignature: 'l2:s1>s2' })).toBe(false);
+    expect(guard.isSamePassenger(token, { ...trip, odKey: 's1>s3' })).toBe(false);
+  });
+
+  it('does not let an older request end a newer token', () => {
+    const guard = createFollowAnotherGuard();
+    const oldToken = guard.begin(trip);
+    const newTrip = { ...trip, pathSignature: 'l2:s1>s2' };
+    const newToken = guard.begin(newTrip);
+
+    guard.end(oldToken);
+
+    expect(guard.isSamePassenger(newToken, newTrip)).toBe(true);
+    expect(guard.isSamePassenger(oldToken, trip)).toBe(false);
+  });
+
+  it('clears the active passenger', () => {
+    const guard = createFollowAnotherGuard();
+    const token = guard.begin(trip);
+
+    guard.clear();
+
+    expect(guard.isSamePassenger(token, trip)).toBe(false);
+  });
+});
 
 describe('next passenger station', () => {
   it('returns the next station in trip order', () => {

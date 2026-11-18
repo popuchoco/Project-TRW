@@ -16,6 +16,41 @@ interface PassengerRequestHandlerOptions {
 
 const CANCELLED_MESSAGE = '路網或畫面已變更，已取消跟隨代表旅客。';
 
+/** Tracks the passenger a "follow another" request should differ from. */
+export function createFollowAnotherGuard(): {
+  begin(current: RepresentativePassenger): number;
+  isSamePassenger(token: number, trip: RepresentativePassenger): boolean;
+  end(token: number): void;
+  clear(): void;
+} {
+  let nextToken = 0;
+  let activeToken: number | undefined;
+  let baseline: RepresentativePassenger | undefined;
+
+  return {
+    begin(current) {
+      const token = ++nextToken;
+      activeToken = token;
+      baseline = current;
+      return token;
+    },
+    isSamePassenger(token, trip) {
+      return activeToken === token
+        && baseline?.odKey === trip.odKey
+        && baseline.pathSignature === trip.pathSignature;
+    },
+    end(token) {
+      if (activeToken !== token) return;
+      activeToken = undefined;
+      baseline = undefined;
+    },
+    clear() {
+      activeToken = undefined;
+      baseline = undefined;
+    },
+  };
+}
+
 /** Returns the next distinct station in a representative trip, wrapping at the end. */
 export function nextPassengerStationId(trip: RepresentativePassenger): string | undefined {
   const stationIds: string[] = [];
