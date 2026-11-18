@@ -1,10 +1,15 @@
-import { TRANSIT_MODES } from "../city/modes";
+import {
+  isNonNegativeInteger,
+  isTrainCount,
+  isValidTransitCars,
+  MAX_NAME_LENGTH,
+  MAX_TRAINS_PER_PERIOD,
+} from "../city/limits";
 import { CURRENT_SCHEMA_VERSION, FutureSaveVersionError, SaveValidationError, type SavePayloadV2, type SaveRecord } from "./types";
 import { isTransitWorkerSaveState } from "../sim/protocol";
 
 const MAX_STATIONS = 10_000;
 const MAX_LINES = 1_000;
-const MAX_TRAINS_PER_PERIOD = 100_000;
 const MAX_STATS_FIELDS = 32;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -22,14 +27,17 @@ function requireRecord(value: unknown, field: string): Record<string, unknown> {
 }
 
 function requireString(value: unknown, field: string, maxLength = 200): string {
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > maxLength) {
+  if (typeof value !== "string" || value.trim().length === 0) {
     throw new SaveValidationError(`存檔格式錯誤：${field} 必須是有效文字。`);
+  }
+  if (value.length > maxLength) {
+    throw new SaveValidationError(`存檔格式錯誤：${field} 不得超過 ${maxLength} 字。`);
   }
   return value;
 }
 
 function requireNonNegativeInteger(value: unknown, field: string, maximum = Number.MAX_SAFE_INTEGER): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+  if (!isNonNegativeInteger(value) || value > maximum) {
     throw new SaveValidationError(`存檔格式錯誤：${field} 必須是有效的非負整數。`);
   }
   return value as number;
@@ -53,7 +61,7 @@ function validateV2Payload(value: Record<string, unknown>): asserts value is Sav
     if (!match || stationIds.has(id)) throw new SaveValidationError(`存檔格式錯誤：車站 ID「${id}」無效或重複。`);
     stationIds.add(id);
     highestId = Math.max(highestId, Number(match[1]));
-    requireString(station.name, `network.stations[${index}].name`);
+    requireString(station.name, `network.stations[${index}].name`, MAX_NAME_LENGTH);
     if (!isFiniteNumber(station.lon) || station.lon < -180 || station.lon > 180) {
       throw new SaveValidationError(`存檔格式錯誤：車站 ${id} 的經度無效。`);
     }
@@ -89,14 +97,16 @@ function validateV2Payload(value: Record<string, unknown>): asserts value is Sav
       }
       servedStationIds.add(stationId);
     }
-    const cars = requireNonNegativeInteger(line.cars, `network.lines[${index}].cars`, 6);
-    if (line.mode === "brt" ? cars !== TRANSIT_MODES.brt.carsFixed :
-      cars < TRANSIT_MODES.metro.carsMin || cars > TRANSIT_MODES.metro.carsMax) {
+    if (!isValidTransitCars(line.mode, line.cars)) {
       throw new SaveValidationError(`存檔格式錯誤：路線 ${id} 的車節數超出運具範圍。`);
     }
-    requireNonNegativeInteger(line.peakTrains, `network.lines[${index}].peakTrains`, MAX_TRAINS_PER_PERIOD);
-    requireNonNegativeInteger(line.offPeakTrains, `network.lines[${index}].offPeakTrains`, MAX_TRAINS_PER_PERIOD);
-    requireString(line.name, `network.lines[${index}].name`);
+    if (!isTrainCount(line.peakTrains)) {
+      throw new SaveValidationError(`存檔格式錯誤：network.lines[${index}].peakTrains 必須是 ${MAX_TRAINS_PER_PERIOD} 以內的非負整數。`);
+    }
+    if (!isTrainCount(line.offPeakTrains)) {
+      throw new SaveValidationError(`存檔格式錯誤：network.lines[${index}].offPeakTrains 必須是 ${MAX_TRAINS_PER_PERIOD} 以內的非負整數。`);
+    }
+    requireString(line.name, `network.lines[${index}].name`, MAX_NAME_LENGTH);
     if (typeof line.color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(line.color)) {
       throw new SaveValidationError(`存檔格式錯誤：路線 ${id} 的顏色無效。`);
     }

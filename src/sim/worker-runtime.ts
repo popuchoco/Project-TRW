@@ -6,6 +6,7 @@ import {
   type Network,
   type Station,
 } from '../city/network';
+import { isNonNegativeInteger } from '../city/limits';
 import { GAME_DAY_MS } from '../city/modes';
 import { createSim, resumeSim, snapshotOf, step, type SimState } from './core';
 import type { SimSpeed } from './clock';
@@ -103,6 +104,13 @@ export class TransitWorkerRuntime {
       }
       const state: TransitWorkerSaveState = { version: 2, seed: this.seed, transit: this.simulation.serialize() };
       return [{ type: 'saveStateResult', requestId: message.requestId, state }];
+    }
+    if (message.type === 'requestRepresentativePassenger') {
+      return [{
+        type: 'representativePassengerResult',
+        requestId: message.requestId,
+        passenger: this.simulation?.representativePassenger(message.stationId) ?? null,
+      }];
     }
     return this.loadTransitState(message.requestId, message.state);
   }
@@ -275,7 +283,7 @@ function isVillageAttribute(value: unknown): value is VillageAttribute {
   if (!('VILLCODE' in value) || !('population' in value) || !('demandPoint' in value)) return false;
   const row = value as Record<string, unknown>;
   return typeof row.VILLCODE === 'string' && row.VILLCODE.length > 0
-    && typeof row.population === 'number' && Number.isFinite(row.population) && row.population >= 0
+    && isNonNegativeInteger(row.population)
     && Array.isArray(row.demandPoint) && row.demandPoint.length === 2
     && typeof row.demandPoint[0] === 'number' && Number.isFinite(row.demandPoint[0])
     && row.demandPoint[0] >= -180 && row.demandPoint[0] <= 180

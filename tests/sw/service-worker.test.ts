@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildCacheNames, CACHE_MATCH_OPTIONS, deleteObsoleteTrwCaches, type CacheStorageKeys } from "../../src/sw/cache";
 import { buildPrecacheList } from "../../src/sw/precache";
@@ -66,6 +68,28 @@ describe("service worker routes", () => {
 });
 
 describe("precache list", () => {
+  it("includes the Taipei/New Taipei village manifest, population and topology files", () => {
+    const list = buildPrecacheList([]);
+    expect(list).toContain("./data/villages-manifest.json");
+    expect(list).toContain("./data/villages-6300065000.json");
+    expect(list).toContain("./data/villages-6300065000.topo.json");
+  });
+
+  it("includes LOD2 and the LOD3 counties the 北北 metro view loads, so offline 北北 has map detail", () => {
+    const list = buildPrecacheList([]);
+    expect(list).toContain("./data/trw-1140318-lod2.topo.json");
+    for (const county of ["63000", "65000", "10017", "68000", "10002", "10004", "10005", "10018"]) {
+      expect(list).toContain(`./data/lod3/${county}.topo.json`);
+    }
+    expect(list).not.toContain("./data/lod3/64000.topo.json");
+  });
+
+  it("only lists data files that exist in public/", () => {
+    for (const path of buildPrecacheList([]).filter((entry) => entry.startsWith("./data/"))) {
+      expect(existsSync(resolve(process.cwd(), "public", path)), path).toBe(true);
+    }
+  });
+
   it("includes the shell, generated scripts/styles, data manifest, LOD0/LOD1, and insets", () => {
     const list = buildPrecacheList(["./assets/index-abcd.js", "./assets/index-1234.css"]);
     expect(list).toContain("./index.html");

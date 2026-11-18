@@ -9,7 +9,8 @@ import type {
   VillageSource,
   WorkerToMainMessage,
 } from './protocol';
-import { isTransitWorkerToMainMessage, isWorkerToMainMessage } from './protocol';
+import { isTransitWorkerSaveState, isTransitWorkerToMainMessage, isWorkerToMainMessage } from './protocol';
+import type { RepresentativePassenger } from './transit/representative';
 
 interface TimedSnapshot {
   snapshot: SimSnapshot;
@@ -17,6 +18,7 @@ interface TimedSnapshot {
 }
 
 export type SimClientSnapshot = SimSnapshot | TransitWorkerSnapshot;
+export type InterpolatedTrainPositionFrame = TransitWorkerSnapshot['trains'] & { readonly gameTimeMs: number };
 
 export interface SimStatus {
   seq: number;
@@ -41,7 +43,7 @@ export class SimClient {
   private transitSnapshots: Array<{ snapshot: TransitWorkerSnapshot; receivedAt: number }> = [];
   private readonly snapshotSubscribers = new Set<(snapshot: SimClientSnapshot) => void>();
   private readonly pendingRequests = new Map<string, {
-    resolve: (state?: TransitWorkerSaveState) => void;
+    resolve: (value?: unknown) => void;
     reject: (error: Error) => void;
   }>();
   private currentPaused = true;
@@ -108,7 +110,9 @@ export class SimClient {
     const requestId = this.nextRequestId('save');
     return new Promise<TransitWorkerSaveState>((resolve, reject) => {
       this.pendingRequests.set(requestId, {
-        resolve: (state) => state ? resolve(state) : reject(new Error('Worker returned no save state.')),
+        resolve: (state) => isTransitWorkerSaveState(state)
+          ? resolve(state)
+          : reject(new Error('Worker returned no save state.')),
         reject,
       });
       this.worker.postMessage({ type: 'saveState', requestId });
@@ -121,6 +125,20 @@ export class SimClient {
     return new Promise<void>((resolve, reject) => {
       this.pendingRequests.set(requestId, { resolve: () => resolve(), reject });
       this.worker.postMessage({ type: 'loadState', requestId, state });
+    });
+  }
+
+  requestRepresentativePassenger(stationId: string): Promise<RepresentativePassenger | null> {
+    if (this.protocol !== 'transit') return Promise.reject(new Error('Transit simulation has not started.'));
+    const requestId = this.nextRequestId('representative');
+    return new Promise<RepresentativePassenger | null>((resolve, reject) => {
+      this.pendingRequests.set(requestId, {
+        resolve: (passenger) => passenger === null || (typeof passenger === 'object' && passenger !== undefined)
+          ? resolve(passenger as RepresentativePassenger | null)
+          : reject(new Error('Worker returned an invalid representative passenger.')),
+        reject,
+      });
+      this.worker.postMessage({ type: 'requestRepresentativePassenger', requestId, stationId });
     });
   }
 
@@ -181,12 +199,26 @@ export class SimClient {
     return interpolateSnapshots(previous, latest, this.renderTimeAt(now));
   }
 
-  getInterpolatedTrainPositions(now = this.now()): TransitWorkerSnapshot['trains'] {
-    if (this.protocol !== 'transit') return [];
+  getInterpolatedTrainPositions(now = this.now()): InterpolatedTrainPositionFrame {
+    const gameTimeMs = this.renderTimeAt(now);
+    if (this.protocol !== 'transit') {
+      const positions: TransitWorkerSnapshot['trains'] = [];
+      Object.defineProperty(positions, 'gameTimeMs', { value: gameTimeMs, enumerable: false });
+      return positions as InterpolatedTrainPositionFrame;
+    }
     const latest = this.latestTransit()?.snapshot;
-    if (!latest) return [];
-    const previous = this.transitSnapshots.length > 1 ? this.transitSnapshots[0]!.snapshot : latest;
-    return interpolateTrainSnapshots(previous, latest, this.renderTimeAt(now));
+    const positions = latest
+      ? interpolateTrainSnapshots(
+        this.transitSnapshots.length > 1 ? this.transitSnapshots[0]!.snapshot : latest,
+        latest,
+        gameTimeMs,
+      )
+      : [];
+    Object.defineProperty(positions, 'gameTimeMs', {
+      value: gameTimeMs,
+      enumerable: false,
+    });
+    return positions as InterpolatedTrainPositionFrame;
   }
 
   destroy(): void {
@@ -245,6 +277,11 @@ export class SimClient {
         this.renderAnchorAt = receivedAt;
       }
       this.publishSnapshot(message.snapshot);
+    } else if (message.type === 'representativePassengerResult') {
+      const request = this.pendingRequests.get(message.requestId);
+      if (!request) return;
+      this.pendingRequests.delete(message.requestId);
+      request.resolve(message.passenger);
     } else if (message.type === 'saveStateResult' || message.type === 'loadStateResult') {
       const request = this.pendingRequests.get(message.requestId);
       if (!request) return;
@@ -266,7 +303,7 @@ export class SimClient {
     for (const subscriber of this.snapshotSubscribers) subscriber(snapshot);
   }
 
-  private nextRequestId(action: 'save' | 'load'): string {
+  private nextRequestId(action: 'save' | 'load' | 'representative'): string {
     this.requestSequence += 1;
     return `${action}-${this.requestSequence}`;
   }

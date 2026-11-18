@@ -1,7 +1,7 @@
 export const DEFAULT_DENSITY_CLASS_COUNT = 6;
 
-/** Pale to deep teal, ordered from the lowest to highest density class. */
-export const DENSITY_PALETTE = [0xf1f5f2, 0xd2e6df, 0xa8d2c8, 0x75b9ae, 0x3b958f, 0x176d70] as const;
+/** Muted teal scale, ordered from the lowest to highest density class. */
+export const DENSITY_PALETTE = [0xf2f5f2, 0xe5ece8, 0xd3e0da, 0xbdd1c9, 0xa1bdb4, 0x829f98] as const;
 export const UNMATCHED_VILLAGE_COLOR = 0x9da5a2;
 
 export function populationDensity(population: number, areaKm2: number): number {

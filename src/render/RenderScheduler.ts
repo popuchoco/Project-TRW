@@ -1,6 +1,12 @@
 export type AnimationFrameRequest = (callback: (timestamp: number) => void) => number;
 export type AnimationFrameCancel = (handle: number) => void;
 
+let activeRenderFrames = 0;
+
+export function isRenderFrameActive(): boolean {
+  return activeRenderFrames > 0;
+}
+
 export interface RenderSchedulerOptions {
   render: () => void;
   requestAnimationFrame?: AnimationFrameRequest;
@@ -101,6 +107,7 @@ export class RenderScheduler {
     if (!this.dirty && !this.animating) return;
 
     this.frameRunning = true;
+    activeRenderFrames += 1;
     const shouldRender = this.dirty || this.animating;
     this.dirty = false;
     try {
@@ -115,6 +122,7 @@ export class RenderScheduler {
         this.afterRender?.();
       }
     } finally {
+      activeRenderFrames -= 1;
       this.frameRunning = false;
       if (this.dirty || this.animating) this.scheduleFrame();
     }

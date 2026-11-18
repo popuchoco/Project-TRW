@@ -3,17 +3,27 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
+import { composeDataVersion } from "./src/sw/data-version.ts";
 import { buildPrecacheList } from "./src/sw/precache.ts";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { version?: string };
 const appVersion = packageJson.version ?? "0.0.0";
-const dataVersion = "1140318-v1150817-p11510";
+
+function readDataVersion(): string {
+  const townManifest = JSON.parse(readFileSync(resolve(root, "public/data/manifest.json"), "utf8")) as unknown;
+  const villageManifest = JSON.parse(readFileSync(resolve(root, "public/data/villages-manifest.json"), "utf8")) as unknown;
+  return composeDataVersion(townManifest, villageManifest);
+}
 
 function serviceWorkerPlugin(): Plugin {
+  let dataVersion = "";
   return {
     name: "trw-service-worker-precache",
     apply: "build",
+    buildStart() {
+      dataVersion = readDataVersion();
+    },
     generateBundle(_options, bundle) {
       const worker = Object.values(bundle).find((output) => output.type === "chunk" && output.name === "sw");
       if (!worker || worker.type !== "chunk") throw new Error("Service worker entry was not emitted");

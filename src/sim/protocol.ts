@@ -1,7 +1,10 @@
 import type { Network } from '../city/network';
+import { isNonNegativeInteger, isTrainCount, isValidTransitCars, MAX_NAME_LENGTH } from '../city/limits';
 import { SIM_SPEEDS, type SimSpeed } from './clock';
 import type { SimContinuationState, SimSnapshot } from './core';
 import type { TransitSimSerializedState, TransitSummarySnapshot } from './transit';
+import type { QualityScore } from './transit/quality';
+import type { RepresentativePassenger } from './transit/representative';
 
 export interface LegacyStartMessage {
   type: 'start';
@@ -95,13 +98,20 @@ export interface TransitSaveStateMessage {
   requestId: string;
 }
 
+export interface TransitRequestRepresentativePassengerMessage {
+  type: 'requestRepresentativePassenger';
+  requestId: string;
+  stationId: string;
+}
+
 export type TransitMainToWorkerMessage = TransitStartMessage
   | TransitSetNetworkMessage
   | TransitPauseMessage
   | TransitResumeMessage
   | TransitSetSpeedMessage
   | TransitLoadStateMessage
-  | TransitSaveStateMessage;
+  | TransitSaveStateMessage
+  | TransitRequestRepresentativePassengerMessage;
 
 export interface TransitSnapshotMessage {
   type: 'snapshot';
@@ -120,6 +130,12 @@ export interface TransitLoadStateResultMessage {
   ok: true;
 }
 
+export interface TransitRepresentativePassengerResultMessage {
+  type: 'representativePassengerResult';
+  requestId: string;
+  passenger: RepresentativePassenger | null;
+}
+
 export interface TransitErrorMessage {
   type: 'error';
   message: string;
@@ -129,6 +145,7 @@ export interface TransitErrorMessage {
 export type TransitWorkerToMainMessage = TransitSnapshotMessage
   | TransitSaveStateResultMessage
   | TransitLoadStateResultMessage
+  | TransitRepresentativePassengerResultMessage
   | TransitErrorMessage;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -141,10 +158,6 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isNonNegativeNumber(value: unknown): value is number {
   return isFiniteNumber(value) && value >= 0;
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isSeed(value: unknown): value is number {
@@ -196,7 +209,7 @@ function isNetwork(value: unknown): value is Network {
   const stationIds = new Set<string>();
   for (const station of value.stations) {
     if (!isRecord(station) || typeof station.id !== 'string' || station.id.length === 0
-      || stationIds.has(station.id) || typeof station.name !== 'string'
+      || stationIds.has(station.id) || typeof station.name !== 'string' || station.name.length > MAX_NAME_LENGTH
       || !isFiniteNumber(station.lon) || station.lon < -180 || station.lon > 180
       || !isFiniteNumber(station.lat) || station.lat < -90 || station.lat > 90
       || (station.nameManual !== undefined && typeof station.nameManual !== 'boolean')) return false;
@@ -209,8 +222,9 @@ function isNetwork(value: unknown): value is Network {
       || (line.mode !== 'brt' && line.mode !== 'metro') || !Array.isArray(line.stationIds)
       || line.stationIds.length < 2 || !line.stationIds.every((id: unknown) => typeof id === 'string' && stationIds.has(id))
       || new Set(line.stationIds).size !== line.stationIds.length
-      || !isNonNegativeInteger(line.peakTrains) || !isNonNegativeInteger(line.offPeakTrains)
-      || !isNonNegativeInteger(line.cars) || line.cars < 1 || typeof line.name !== 'string'
+      || !isTrainCount(line.peakTrains) || !isTrainCount(line.offPeakTrains)
+      || !isValidTransitCars(line.mode, line.cars) || typeof line.name !== 'string'
+      || line.name.length > MAX_NAME_LENGTH
       || typeof line.color !== 'string') return false;
     lineIds.add(line.id);
   }
@@ -227,7 +241,73 @@ function areFiniteNumbers(value: unknown): value is number[] {
   return Array.isArray(value) && value.every(isFiniteNumber);
 }
 
-function isTransitSummary(value: unknown): value is TransitSummarySnapshot {
+function isQualityRawStats(value: unknown): boolean {
+  return isRecord(value)
+    && isNonNegativeNumber(value.averageWaitMinutes)
+    && isNonNegativeNumber(value.averageTransfers)
+    && isNonNegativeNumber(value.averageLoadFactor)
+    && isFiniteNumber(value.deniedRatio) && value.deniedRatio >= 0 && value.deniedRatio <= 1;
+}
+
+function isQualityScore(value: unknown, allowMissingMetrics = false): value is QualityScore {
+  if (!isRecord(value)) return false;
+  const validScores = ['wait', 'transfer', 'crowding', 'denied', 'total'].every((key) => {
+    const score = value[key];
+    return isFiniteNumber(score) && score >= 0 && score <= 100;
+  });
+  return validScores && (isQualityRawStats(value.metrics)
+    || (allowMissingMetrics && value.metrics === undefined));
+}
+
+function isQualityOrMissingLegacy(value: unknown, allowMissing: boolean): boolean {
+  return (allowMissing && value === undefined) || value === null || isQualityScore(value, allowMissing);
+}
+
+function isSegmentFlow(value: unknown): boolean {
+  return isRecord(value)
+    && isNonNegativeNumber(value.load)
+    && isNonNegativeNumber(value.capacity)
+    && isNonNegativeNumber(value.loadFactor);
+}
+
+function isDirectionalSectionFlow(value: unknown, segmentCount: number): boolean {
+  return Array.isArray(value) && value.length === segmentCount && value.every(isSegmentFlow);
+}
+
+function isSectionFlow(value: unknown, stationCount: number): boolean {
+  if (!isRecord(value)) return false;
+  const segmentCount = stationCount - 1;
+  return PERIOD_IDS.every((periodId) => {
+    const period = value[periodId];
+    return isRecord(period)
+      && isDirectionalSectionFlow(period.forward, segmentCount)
+      && isDirectionalSectionFlow(period.backward, segmentCount);
+  });
+}
+
+function isDirectionalStationFlow(value: unknown, stationCount: number): boolean {
+  return isRecord(value)
+    && Array.isArray(value.boardings) && value.boardings.length === stationCount
+    && value.boardings.every(isNonNegativeNumber)
+    && Array.isArray(value.alightings) && value.alightings.length === stationCount
+    && value.alightings.every(isNonNegativeNumber);
+}
+
+function isStationFlows(value: unknown, stationCount: number): boolean {
+  if (!isRecord(value)) return false;
+  return PERIOD_IDS.every((periodId) => {
+    const period = value[periodId];
+    return isRecord(period)
+      && isDirectionalStationFlow(period.forward, stationCount)
+      && isDirectionalStationFlow(period.backward, stationCount);
+  });
+}
+
+function isTransitSummary(
+  value: unknown,
+  allowMissingQuality = false,
+  allowMissingSectionFlow = false,
+): value is TransitSummarySnapshot {
   if (!isRecord(value) || !isNonNegativeNumber(value.gameTimeMs)
     || !isNonNegativeInteger(value.gameDay) || !isPeriodId(value.currentPeriodId)
     || !isNonNegativeInteger(value.pathRecomputeCount) || !isNonNegativeInteger(value.demandPairCount)
@@ -238,6 +318,7 @@ function isTransitSummary(value: unknown): value is TransitSummarySnapshot {
     || !isNonNegativeNumber(city.dailyRidership) || !isNonNegativeNumber(city.potentialTrips)
     || !isFiniteNumber(city.transitShare) || city.transitShare < 0 || city.transitShare > 1
     || !isNonNegativeNumber(city.deniedBoardings) || !isNonNegativeNumber(city.transfers)
+    || !isQualityOrMissingLegacy(city.quality, allowMissingQuality)
     || !isNonNegativeNumber(city.fareRevenue) || !isNonNegativeNumber(city.operatingCost)
     || !isFiniteNumber(city.profitLossRatio)) return false;
 
@@ -255,9 +336,13 @@ function isTransitSummary(value: unknown): value is TransitSummarySnapshot {
   for (const line of value.lines) {
     if (!isRecord(line) || typeof line.lineId !== 'string' || line.lineId.length === 0
       || typeof line.name !== 'string' || (line.mode !== 'brt' && line.mode !== 'metro')
-      || !isNonNegativeInteger(line.stationCount) || !isNonNegativeNumber(line.lengthKm)
+      || !isNonNegativeInteger(line.stationCount) || line.stationCount < 2 || !isNonNegativeNumber(line.lengthKm)
       || !isNonNegativeInteger(line.cars) || !isNonNegativeInteger(line.peakTrains)
       || !isNonNegativeInteger(line.offPeakTrains)
+      || !isQualityOrMissingLegacy(line.quality, allowMissingQuality)
+      || !((allowMissingSectionFlow && line.sectionFlow === undefined && line.stationFlows === undefined)
+        || (isSectionFlow(line.sectionFlow, line.stationCount)
+          && isStationFlows(line.stationFlows, line.stationCount)))
       || !Array.isArray(line.periods) || line.periods.length !== 4
       || !line.periods.every((period: unknown) => isRecord(period)
         && isPeriodId(period.periodId) && typeof period.periodName === 'string'
@@ -279,7 +364,7 @@ function isSerializedTransitState(value: unknown): value is TransitSimSerialized
   if (!isRecord(value) || value.version !== 1 || typeof value.villageFingerprint !== 'string'
     || !isNetwork(value.network) || !isNonNegativeNumber(value.gameTimeMs)
     || !isNonNegativeInteger(value.pathRecomputeCount) || !Array.isArray(value.actualAttempts)
-    || !isTransitSummary(value.snapshot)) return false;
+    || !isTransitSummary(value.snapshot, true, true)) return false;
   const attemptKeys = new Set<string>();
   for (const attempt of value.actualAttempts) {
     if (!isRecord(attempt) || typeof attempt.key !== 'string' || attemptKeys.has(attempt.key)
@@ -306,6 +391,29 @@ export function isTransitWorkerSnapshot(value: unknown): value is TransitWorkerS
     && typeof train.lineId === 'string' && train.lineId.length > 0
     && isFiniteNumber(train.lon) && train.lon >= -180 && train.lon <= 180
     && isFiniteNumber(train.lat) && train.lat >= -90 && train.lat <= 90);
+}
+
+function isPassengerLeg(value: unknown): boolean {
+  if (!isRecord(value) || !['walkIn', 'wait', 'ride', 'transfer', 'walkOut'].some((kind) => kind === value.kind)
+    || !isNonNegativeNumber(value.minutes)) return false;
+  return ['lineId', 'fromStationId', 'toStationId'].every((key) => {
+    const field = value[key];
+    return field === undefined || (typeof field === 'string' && field.length > 0 && field.length <= 200);
+  });
+}
+
+function isRepresentativePassenger(value: unknown): value is RepresentativePassenger {
+  return isRecord(value)
+    && typeof value.selectedStationId === 'string' && value.selectedStationId.length > 0 && value.selectedStationId.length <= 200
+    && typeof value.odKey === 'string' && value.odKey.length > 0 && value.odKey.length <= 500
+    && isNonNegativeNumber(value.flow)
+    && typeof value.startStationId === 'string' && value.startStationId.length > 0 && value.startStationId.length <= 200
+    && typeof value.endStationId === 'string' && value.endStationId.length > 0 && value.endStationId.length <= 200
+    && typeof value.pathSignature === 'string' && value.pathSignature.length > 0 && value.pathSignature.length <= 200_000
+    && Array.isArray(value.legs) && value.legs.length > 0 && value.legs.length <= 5_000
+    && value.legs.every(isPassengerLeg)
+    && isNonNegativeNumber(value.doorToDoorMinutes)
+    && (value.alternativeMinutes === null || isNonNegativeNumber(value.alternativeMinutes));
 }
 
 function isLegacySnapshot(value: unknown): value is SimSnapshot {
@@ -350,11 +458,19 @@ export function isTransitSaveStateMessage(value: unknown): value is TransitSaveS
   return isRecord(value) && value.type === 'saveState' && isRequestId(value.requestId);
 }
 
+export function isTransitRequestRepresentativePassengerMessage(
+  value: unknown,
+): value is TransitRequestRepresentativePassengerMessage {
+  return isRecord(value) && value.type === 'requestRepresentativePassenger'
+    && isRequestId(value.requestId)
+    && typeof value.stationId === 'string' && value.stationId.length > 0 && value.stationId.length <= 200;
+}
+
 export function isTransitMainToWorkerMessage(value: unknown): value is TransitMainToWorkerMessage {
   return isTransitStartMessage(value) || isTransitSetNetworkMessage(value)
     || isTransitPauseMessage(value) || isTransitResumeMessage(value)
     || isTransitSetSpeedMessage(value) || isTransitLoadStateMessage(value)
-    || isTransitSaveStateMessage(value);
+    || isTransitSaveStateMessage(value) || isTransitRequestRepresentativePassengerMessage(value);
 }
 
 export function isTransitSnapshotMessage(value: unknown): value is TransitSnapshotMessage {
@@ -370,6 +486,14 @@ export function isTransitLoadStateResultMessage(value: unknown): value is Transi
   return isRecord(value) && value.type === 'loadStateResult' && isRequestId(value.requestId) && value.ok === true;
 }
 
+export function isTransitRepresentativePassengerResultMessage(
+  value: unknown,
+): value is TransitRepresentativePassengerResultMessage {
+  return isRecord(value) && value.type === 'representativePassengerResult'
+    && isRequestId(value.requestId)
+    && (value.passenger === null || isRepresentativePassenger(value.passenger));
+}
+
 export function isTransitErrorMessage(value: unknown): value is TransitErrorMessage {
   return isRecord(value) && value.type === 'error' && typeof value.message === 'string'
     && (value.requestId === undefined || isRequestId(value.requestId));
@@ -377,7 +501,8 @@ export function isTransitErrorMessage(value: unknown): value is TransitErrorMess
 
 export function isTransitWorkerToMainMessage(value: unknown): value is TransitWorkerToMainMessage {
   return isTransitSnapshotMessage(value) || isTransitSaveStateResultMessage(value)
-    || isTransitLoadStateResultMessage(value) || isTransitErrorMessage(value);
+    || isTransitLoadStateResultMessage(value) || isTransitRepresentativePassengerResultMessage(value)
+    || isTransitErrorMessage(value);
 }
 
 function isRequestId(value: unknown): value is string {

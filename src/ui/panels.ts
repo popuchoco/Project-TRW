@@ -6,8 +6,18 @@ import {
   type Line,
   type Network,
 } from '../city/network';
+import { MAX_NAME_LENGTH } from '../city/limits';
+import type { FollowTrainInfo } from '../city/follow';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
 import type { TransitSummarySnapshot } from '../sim/transit';
+import type { RepresentativePassenger } from '../sim/transit/representative';
+import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
+import { buildPassengerViewModel, createPassengerView, type PassengerStationNames } from './passenger-view';
+import {
+  createSectionFlowChart,
+  sectionFlowFromSnapshot,
+  type SectionFlowChartRenderer,
+} from './section-flow-chart';
 
 const numberFormat = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
 const moneyFormat = new Intl.NumberFormat('zh-TW', {
@@ -53,11 +63,18 @@ export interface PanelCallbacks {
   renameStation(stationId: string, name: string): void;
   setLineTrains(lineId: string, peakTrains: number, offPeakTrains: number): void;
   setLineCars(lineId: string, cars: number): void;
+  followLine(lineId: string): void;
+  followPassenger(stationId: string): void;
 }
 
 export interface SimulationPanels {
   element: HTMLElement;
   update(network: Network, snapshot: TransitSummarySnapshot | undefined, selectedStationId?: string): void;
+  updateFollowInfo(
+    info: FollowTrainInfo | undefined,
+    passenger?: RepresentativePassenger,
+    stationNames?: PassengerStationNames,
+  ): void;
 }
 
 interface PeriodRow {
@@ -82,6 +99,8 @@ interface LineCard {
   carsInput?: HTMLInputElement;
   carsOutput?: HTMLElement;
   totalCost: HTMLElement;
+  qualityPanel: QualityPanelRenderer;
+  sectionFlowChart: SectionFlowChartRenderer;
   periodRows: Map<SimulationPeriodId, PeriodRow>;
 }
 
@@ -126,8 +145,15 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
   const roundTrip = makeValueRow('來回一趟');
   facts.append(stationCount.row, length.row, roundTrip.row);
   card.append(facts);
+  const qualityPanel = createQualityPanel();
+  card.append(qualityPanel.element);
+  const sectionFlowChart = createSectionFlowChart();
+  card.append(sectionFlowChart.element);
 
   const controls = element('div', 'line-card-controls');
+  const followButton = element('button', 'source-button', '跟隨列車');
+  followButton.type = 'button';
+  followButton.addEventListener('click', () => callbacks.followLine(line.id));
   const peakInput = element('input', 'panel-range');
   peakInput.type = 'range';
   peakInput.min = '0';
@@ -168,7 +194,7 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
   cardsSetLineInputs(line, peakInput, peakOutput, offPeakInput, offPeakOutput, carsInput, carsOutput);
   peakInput.addEventListener('input', () => callbacks.setLineTrains(line.id, Number(peakInput.value), Number(offPeakInput.value)));
   offPeakInput.addEventListener('input', () => callbacks.setLineTrains(line.id, Number(peakInput.value), Number(offPeakInput.value)));
-  controls.append(carsControl);
+  controls.append(carsControl, followButton);
   card.append(controls);
 
   const periodTable = element('div', 'line-periods');
@@ -203,6 +229,8 @@ function makeLineCard(line: Line, callbacks: PanelCallbacks): LineCard {
     carsInput,
     carsOutput,
     totalCost,
+    qualityPanel,
+    sectionFlowChart,
     periodRows,
   };
 }
@@ -257,6 +285,11 @@ function updateLineCard(card: LineCard, line: Line, network: Network, snapshot: 
   card.totalCost.textContent = `每日營運成本（模擬值）：${formatPanelMoney(lineStats
     ? totalOperatingCost
     : 0)}`;
+  card.qualityPanel.update(lineStats?.quality ?? null, lineStats?.quality?.metrics ?? null);
+  // Older saved snapshots may lack section flow; the chart then shows its empty state.
+  const sectionFlow = sectionFlowFromSnapshot(lineStats?.sectionFlow);
+  const stationNames = line.stationIds.map((stationId) => network.stations.find(({ id }) => id === stationId)?.name ?? stationId);
+  card.sectionFlowChart.update(sectionFlow, stationNames);
 }
 
 export function createSimulationPanels(container: HTMLElement, callbacks: PanelCallbacks): SimulationPanels {
@@ -269,7 +302,8 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const cityShare = makeValueRow('捷運＋BRT 佔有率');
   const cityProfit = makeValueRow('盈虧率');
   cityFacts.append(cityRidership.row, cityShare.row, cityProfit.row);
-  city.content.append(cityFacts);
+  const cityQualityPanel = createQualityPanel();
+  city.content.append(cityFacts, cityQualityPanel.element);
 
   const station = makeSection('車站營運概況');
   const stationPlaceholder = element('p', 'panel-placeholder', '選取車站後查看營運概況。');
@@ -290,7 +324,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const renameForm = element('form', 'station-rename-form');
   const renameInput = element('input', 'station-rename-input');
   renameInput.type = 'text';
-  renameInput.maxLength = 80;
+  renameInput.maxLength = MAX_NAME_LENGTH;
   renameInput.required = true;
   renameInput.setAttribute('aria-label', '車站名稱');
   const renameButton = element('button', 'source-button', '更名');
@@ -302,12 +336,24 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     if (stationId && renameInput.value.trim()) callbacks.renameStation(stationId, renameInput.value);
   });
   stationDetails.append(stationName, stationFacts, sparklineHeading, sparkline, renameForm);
+  const followPassengerButton = element('button', 'source-button', '跟隨代表旅客');
+  followPassengerButton.type = 'button';
+  followPassengerButton.addEventListener('click', () => {
+    const stationId = renameForm.dataset.stationId;
+    if (stationId) callbacks.followPassenger(stationId);
+  });
+  stationDetails.append(followPassengerButton);
   station.content.append(stationPlaceholder, stationDetails);
 
   const routes = makeSection('路線卡');
   const lineCardsContainer = element('div', 'line-cards');
   routes.content.append(lineCardsContainer);
-  root.append(city.section, station.section, routes.section);
+  const follow = makeSection('跟隨列車／旅客');
+  const followDetails = element('p', 'panel-placeholder');
+  const passengerDetails = element('div', 'passenger-follow-details');
+  follow.content.append(followDetails, passengerDetails);
+  follow.section.hidden = true;
+  root.append(city.section, station.section, routes.section, follow.section);
   container.append(root);
 
   const lineCards = new Map<string, LineCard>();
@@ -316,6 +362,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     cityRidership.value.textContent = `${formatPanelCount(cityStats?.dailyRidership ?? 0)} 人`;
     cityShare.value.textContent = formatPanelPercent(cityStats?.transitShare ?? 0);
     cityProfit.value.textContent = formatPanelPercent(cityStats?.profitLossRatio ?? 0);
+    cityQualityPanel.update(cityStats?.quality ?? null, cityStats?.quality?.metrics ?? null);
 
     const selectedStation = selectedStationId
       ? network.stations.find((candidate) => candidate.id === selectedStationId)
@@ -370,5 +417,26 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     routes.section.hidden = network.lines.length === 0;
   };
 
-  return { element: root, update };
+  const updateFollowInfo = (
+    info: FollowTrainInfo | undefined,
+    passenger?: RepresentativePassenger,
+    stationNames: PassengerStationNames = new Map(),
+  ): void => {
+    follow.section.hidden = !info && !passenger;
+    followDetails.hidden = !info;
+    passengerDetails.replaceChildren();
+    if (passenger) {
+      passengerDetails.append(createPassengerView(document, buildPassengerViewModel(passenger, stationNames)));
+    }
+    if (!info) {
+      followDetails.textContent = '';
+      return;
+    }
+    const loadFactor = info.loadFactor !== undefined && Number.isFinite(info.loadFactor)
+      ? formatPanelPercent(info.loadFactor)
+      : '—';
+    followDetails.textContent = `線名：${info.lineName}　方向：${info.direction}　下一站：${info.nextStationName}　估計負載率：${loadFactor}（模擬值）`;
+  };
+
+  return { element: root, update, updateFollowInfo };
 }

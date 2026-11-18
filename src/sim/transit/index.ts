@@ -18,4 +18,20 @@ export {
   type VillagePair,
 } from './demand';
 export { type RideLeg, type RideSegment, type TransitPath, type WalkAccess } from './graph';
+export {
+  calculateQualityScore,
+  scoreCrowding,
+  scoreDenied,
+  scoreTransfers,
+  scoreWait,
+  QUALITY_WEIGHTS,
+  WAIT_GOOD_MIN,
+  WAIT_BAD_MIN,
+  TRANSFER_BAD,
+  CROWD_GOOD,
+  CROWD_BAD,
+  DENIED_BAD,
+  type QualityMetrics,
+  type QualityScore,
+} from './quality';
 

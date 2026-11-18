@@ -18,6 +18,7 @@ function snapshot(gameTimeMs: number, trains: TransitWorkerSnapshot['trains']): 
       transitShare: 0,
       deniedBoardings: 0,
       transfers: 0,
+      quality: null,
       fareRevenue: 0,
       operatingCost: 0,
       profitLossRatio: 0,

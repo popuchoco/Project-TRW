@@ -8,6 +8,8 @@ import {
   isTransitLoadStateResultMessage,
   isTransitMainToWorkerMessage,
   isTransitPauseMessage,
+  isTransitRequestRepresentativePassengerMessage,
+  isTransitRepresentativePassengerResultMessage,
   isTransitResumeMessage,
   isTransitSaveStateMessage,
   isTransitSaveStateResultMessage,
@@ -49,6 +51,30 @@ const periodStats = [
   { periodId: 'night', periodName: '夜間', maxLoadFactor: 0, operatingCost: 0, roundTripTimeSeconds: 0, headwaySeconds: null, hourlyCapacity: 0, periodCapacity: 0 },
 ] as const;
 
+const zeroSectionFlow = {
+  forward: [{ load: 0, capacity: 0, loadFactor: 0 }],
+  backward: [{ load: 0, capacity: 0, loadFactor: 0 }],
+};
+
+const zeroStationFlow = {
+  forward: { boardings: [0, 0], alightings: [0, 0] },
+  backward: { boardings: [0, 0], alightings: [0, 0] },
+};
+
+const sectionFlow = {
+  morningPeak: zeroSectionFlow,
+  offPeak: zeroSectionFlow,
+  eveningPeak: zeroSectionFlow,
+  night: zeroSectionFlow,
+};
+
+const stationFlows = {
+  morningPeak: zeroStationFlow,
+  offPeak: zeroStationFlow,
+  eveningPeak: zeroStationFlow,
+  night: zeroStationFlow,
+};
+
 const summary: TransitSummarySnapshot = {
   gameTimeMs: 0,
   gameDay: 0,
@@ -62,6 +88,7 @@ const summary: TransitSummarySnapshot = {
     transitShare: 0,
     deniedBoardings: 0,
     transfers: 0,
+    quality: null,
     fareRevenue: 0,
     operatingCost: 0,
     profitLossRatio: 0,
@@ -89,6 +116,9 @@ const summary: TransitSummarySnapshot = {
     offPeakTrains: 4,
     spacingWarnings: [],
     periods: [...periodStats],
+    sectionFlow,
+    stationFlows,
+    quality: null,
   }],
 };
 
@@ -112,6 +142,23 @@ const transitSnapshot: TransitWorkerSnapshot = {
   seed: 17,
   trains: [{ id: 'l1-0', lineId: 'l1', lon: 121.5, lat: 25 }],
   recomputeMs: 0,
+};
+
+const representativePassenger = {
+  selectedStationId: 's1',
+  odKey: 'village-a>village-b',
+  flow: 12,
+  startStationId: 's1',
+  endStationId: 's2',
+  pathSignature: 'l1:s1>s2:0+',
+  legs: [
+    { kind: 'walkIn', minutes: 0, toStationId: 's1' },
+    { kind: 'wait', minutes: 2, lineId: 'l1', fromStationId: 's1', toStationId: 's1' },
+    { kind: 'ride', minutes: 3, lineId: 'l1', fromStationId: 's1', toStationId: 's2' },
+    { kind: 'walkOut', minutes: 0, fromStationId: 's2' },
+  ],
+  doorToDoorMinutes: 5,
+  alternativeMinutes: 20,
 };
 
 const villageSource = {
@@ -138,14 +185,22 @@ describe('transit worker protocol guards', () => {
     ['setSpeed', isTransitSetSpeedMessage, { type: 'setSpeed', speed: 4 }],
     ['loadState', isTransitLoadStateMessage, { type: 'loadState', requestId: 'load-1', state: saveState }],
     ['saveState', isTransitSaveStateMessage, { type: 'saveState', requestId: 'save-1' }],
+    ['request representative passenger', isTransitRequestRepresentativePassengerMessage,
+      { type: 'requestRepresentativePassenger', requestId: 'representative-1', stationId: 's1' }],
     ['main-to-worker union', isTransitMainToWorkerMessage, startMessage],
     ['transit snapshot payload', isTransitWorkerSnapshot, transitSnapshot],
     ['snapshot', isTransitSnapshotMessage, { type: 'snapshot', snapshot: transitSnapshot }],
     ['save state', isTransitWorkerSaveState, saveState],
     ['save state result', isTransitSaveStateResultMessage, { type: 'saveStateResult', requestId: 'save-1', state: saveState }],
     ['load state result', isTransitLoadStateResultMessage, { type: 'loadStateResult', requestId: 'load-1', ok: true }],
+    ['representative passenger result', isTransitRepresentativePassengerResultMessage,
+      { type: 'representativePassengerResult', requestId: 'representative-1', passenger: representativePassenger }],
+    ['empty representative passenger result', isTransitRepresentativePassengerResultMessage,
+      { type: 'representativePassengerResult', requestId: 'representative-2', passenger: null }],
     ['error', isTransitErrorMessage, { type: 'error', message: 'worker error', requestId: 'load-1' }],
     ['worker-to-main union', isTransitWorkerToMainMessage, { type: 'snapshot', snapshot: transitSnapshot }],
+    ['worker-to-main union', isTransitWorkerToMainMessage,
+      { type: 'representativePassengerResult', requestId: 'representative-1', passenger: representativePassenger }],
   ])('accepts a valid %s message', (_name, guard, message) => {
     expect(guard(message)).toBe(true);
   });
@@ -158,12 +213,16 @@ describe('transit worker protocol guards', () => {
     ['setSpeed', isTransitSetSpeedMessage, { type: 'setSpeed', speed: 3 }],
     ['loadState', isTransitLoadStateMessage, { type: 'loadState', state: saveState }],
     ['saveState', isTransitSaveStateMessage, { type: 'saveState', requestId: 5 }],
+    ['request representative passenger', isTransitRequestRepresentativePassengerMessage,
+      { type: 'requestRepresentativePassenger', requestId: 'representative-1', stationId: '' }],
     ['main-to-worker union', isTransitMainToWorkerMessage, { type: 'unknown' }],
     ['transit snapshot payload', isTransitWorkerSnapshot, { ...transitSnapshot, seq: -1 }],
     ['snapshot', isTransitSnapshotMessage, { type: 'snapshot', snapshot: undefined }],
     ['save state', isTransitWorkerSaveState, { ...saveState, transit: undefined }],
     ['save state result', isTransitSaveStateResultMessage, { type: 'saveStateResult', requestId: 'save-1' }],
     ['load state result', isTransitLoadStateResultMessage, { type: 'loadStateResult', requestId: 'load-1', ok: false }],
+    ['representative passenger result', isTransitRepresentativePassengerResultMessage,
+      { type: 'representativePassengerResult', requestId: 'representative-1', passenger: { ...representativePassenger, flow: -1 } }],
     ['error', isTransitErrorMessage, { type: 'error' }],
     ['worker-to-main union', isTransitWorkerToMainMessage, { type: 'unknown' }],
   ])('rejects a malformed %s message', (_name, guard, message) => {
@@ -196,11 +255,111 @@ describe('transit worker protocol guards', () => {
     })).toBe(false);
     expect(isTransitWorkerSnapshot({
       ...transitSnapshot,
+      lines: [{
+        ...transitSnapshot.lines[0]!,
+        sectionFlow: {
+          ...transitSnapshot.lines[0]!.sectionFlow,
+          morningPeak: { ...transitSnapshot.lines[0]!.sectionFlow.morningPeak, forward: [] },
+        },
+      }],
+    })).toBe(false);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      lines: [{
+        ...transitSnapshot.lines[0]!,
+        sectionFlow: {
+          ...transitSnapshot.lines[0]!.sectionFlow,
+          eveningPeak: {
+            ...transitSnapshot.lines[0]!.sectionFlow.eveningPeak,
+            forward: [{ load: Number.NaN, capacity: 0, loadFactor: 0 }],
+          },
+        },
+      }],
+    })).toBe(false);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      lines: [{
+        ...transitSnapshot.lines[0]!,
+        sectionFlow: {
+          ...transitSnapshot.lines[0]!.sectionFlow,
+          offPeak: {
+            ...transitSnapshot.lines[0]!.sectionFlow.offPeak,
+            backward: [{ load: 0, capacity: -1, loadFactor: 0 }],
+          },
+        },
+      }],
+    })).toBe(false);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
       lines: [{ ...transitSnapshot.lines[0], periods: [{ ...periodStats[0], hourlyCapacity: -1 }, ...periodStats.slice(1)] }],
     })).toBe(false);
     expect(isTransitWorkerSaveState({
       ...saveState,
       transit: { ...saveState.transit, actualAttempts: [{ key: 'bad', trips: -1 }] },
+    })).toBe(false);
+  });
+
+  it('validates quality scores and accepts v2 saves whose older snapshots lack them', () => {
+    const numericQuality = {
+      wait: 80,
+      transfer: 70,
+      crowding: 60,
+      denied: 50,
+      total: 66,
+      metrics: {
+        averageWaitMinutes: 4,
+        averageTransfers: 0.3,
+        averageLoadFactor: 0.9,
+        deniedRatio: 0.02,
+      },
+    };
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      city: { ...transitSnapshot.city, quality: numericQuality },
+      lines: [{ ...transitSnapshot.lines[0]!, quality: numericQuality }],
+    })).toBe(true);
+    expect(isTransitWorkerSnapshot({
+      ...transitSnapshot,
+      city: { ...transitSnapshot.city, quality: { ...numericQuality, total: 100.1 } },
+    })).toBe(false);
+
+    const legacy = JSON.parse(JSON.stringify(saveState)) as Record<string, unknown>;
+    const transit = legacy.transit as Record<string, unknown>;
+    const snapshot = transit.snapshot as Record<string, unknown>;
+    const city = snapshot.city as Record<string, unknown>;
+    const lines = snapshot.lines as Array<Record<string, unknown>>;
+    delete city.quality;
+    delete lines[0]!.quality;
+    delete lines[0]!.sectionFlow;
+    delete lines[0]!.stationFlows;
+    expect(isTransitWorkerSaveState(legacy)).toBe(true);
+
+    const legacySnapshot = JSON.parse(JSON.stringify(transitSnapshot)) as Record<string, unknown>;
+    delete (legacySnapshot.city as Record<string, unknown>).quality;
+    expect(isTransitWorkerSnapshot(legacySnapshot)).toBe(false);
+  });
+
+  it('rejects train counts and car lengths outside the shared limits', () => {
+    for (const field of ['peakTrains', 'offPeakTrains'] as const) {
+      expect(isTransitSetNetworkMessage({
+        type: 'setNetwork',
+        network: { ...network, lines: [{ ...network.lines[0]!, [field]: 100_001 }] },
+      })).toBe(false);
+    }
+    expect(isTransitSetNetworkMessage({
+      type: 'setNetwork',
+      network: { ...network, lines: [{ ...network.lines[0]!, cars: 7 }] },
+    })).toBe(false);
+    expect(isTransitSetNetworkMessage({
+      type: 'setNetwork',
+      network: { ...network, lines: [{ ...network.lines[0]!, cars: 2 }] },
+    })).toBe(false);
+  });
+
+  it('rejects a fractional village population in the kind data source guard', () => {
+    expect(isTransitStartMessage({
+      ...startMessage,
+      villages: { kind: 'data', villages: [{ VILLCODE: 'x', population: 1.5, demandPoint: [121, 25] }] },
     })).toBe(false);
   });
 
