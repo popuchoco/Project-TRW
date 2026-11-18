@@ -28,6 +28,45 @@ export type LabelPlacement =
   | { id: string; x: number; y: number; anchor: LabelAnchor }
   | { id: string; hidden: true };
 
+export interface StationLabelCameraState {
+  centerX: number;
+  centerY: number;
+  scale: number;
+  width: number;
+  height: number;
+}
+
+/** Tracks whether station label inputs changed enough to require a new layout. */
+export class StationLabelInvalidator {
+  private invalidated = false;
+  private totalRecomputeCount = 0;
+  private lastCameraState?: StationLabelCameraState;
+
+  get recomputeCount(): number {
+    return this.totalRecomputeCount;
+  }
+
+  markNetworkChanged(): void {
+    this.invalidated = true;
+  }
+
+  markCameraChanged(camera: StationLabelCameraState): void {
+    const previous = this.lastCameraState;
+    this.lastCameraState = camera;
+    if (!previous || previous.centerX !== camera.centerX || previous.centerY !== camera.centerY
+      || previous.scale !== camera.scale || previous.width !== camera.width || previous.height !== camera.height) {
+      this.invalidated = true;
+    }
+  }
+
+  consume(): boolean {
+    if (!this.invalidated) return false;
+    this.invalidated = false;
+    this.totalRecomputeCount += 1;
+    return true;
+  }
+}
+
 // 可調：低於此相對縮放時，遠景只保留轉乘站與高運量站。
 export const STATION_LABEL_FAR_ZOOM_THRESHOLD = 2.2;
 // 可調：遠景額外保留的高運量站數量。

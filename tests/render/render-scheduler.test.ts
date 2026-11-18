@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { followReducer, type FollowState } from '../../src/city/follow';
+import { StationLabelInvalidator } from '../../src/render/labels';
 import { isRenderFrameActive, RenderScheduler } from '../../src/render/RenderScheduler';
 
 function createFrameDriver() {
@@ -177,6 +178,38 @@ describe('RenderScheduler', () => {
     for (let timestamp = 0; timestamp <= 5_000; timestamp += 100) driver.frame(timestamp);
 
     expect(following.kind).toBe('followingPassenger');
+    expect(renderCount).toBe(0);
+    expect(scheduler.renderCount).toBe(0);
+    expect(driver.pendingCount()).toBe(0);
+  });
+
+  it('does not render or recompute labels over five seconds while paused with the label layer enabled', () => {
+    const driver = createFrameDriver();
+    let renderCount = 0;
+    const scheduler = new RenderScheduler({
+      render: () => { renderCount += 1; },
+      requestAnimationFrame: driver.requestAnimationFrame,
+      cancelAnimationFrame: driver.cancelAnimationFrame,
+    });
+    const invalidator = new StationLabelInvalidator();
+    const labelsLayerEnabled = true;
+    const recomputeLabels = (): void => {
+      if (labelsLayerEnabled) invalidator.consume();
+    };
+
+    // The initial camera/network layout is already displayed before the idle interval.
+    invalidator.markNetworkChanged();
+    recomputeLabels();
+    const recomputesAtPauseStart = invalidator.recomputeCount;
+    scheduler.setSimulationActivity(false, false);
+
+    for (let timestamp = 0; timestamp <= 5_000; timestamp += 100) {
+      driver.frame(timestamp);
+      recomputeLabels();
+    }
+
+    expect(labelsLayerEnabled).toBe(true);
+    expect(invalidator.recomputeCount - recomputesAtPauseStart).toBe(0);
     expect(renderCount).toBe(0);
     expect(scheduler.renderCount).toBe(0);
     expect(driver.pendingCount()).toBe(0);

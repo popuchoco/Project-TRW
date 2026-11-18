@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   placeLabels,
+  StationLabelInvalidator,
   STATION_LABEL_FAR_TOP_N,
   STATION_LABEL_FAR_ZOOM_THRESHOLD,
   STATION_LABEL_GRID_CELL,
@@ -61,6 +62,23 @@ function expectNoLabelOrStationOverlap(
 }
 
 describe('station label placement', () => {
+  it('recomputes only after a camera or network change', () => {
+    const invalidator = new StationLabelInvalidator();
+    const camera = { centerX: 0, centerY: 0, scale: 1, width: 100, height: 100 };
+
+    expect(invalidator.consume()).toBe(false);
+    invalidator.markCameraChanged(camera);
+    expect(invalidator.consume()).toBe(true);
+    expect(invalidator.consume()).toBe(false);
+    invalidator.markCameraChanged({ ...camera });
+    expect(invalidator.consume()).toBe(false);
+    invalidator.markCameraChanged({ ...camera, centerX: 1 });
+    expect(invalidator.consume()).toBe(true);
+    invalidator.markNetworkChanged();
+    expect(invalidator.consume()).toBe(true);
+    expect(invalidator.recomputeCount).toBe(3);
+  });
+
   it('avoids label and station-dot overlaps', () => {
     const items: StationLabelItem[] = Array.from({ length: 30 }, (_, index) => ({
       id: `s${String(index).padStart(2, '0')}`,
