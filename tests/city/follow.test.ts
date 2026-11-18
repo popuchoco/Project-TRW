@@ -95,4 +95,37 @@ describe('representative passenger following', () => {
     expect(passengerPositionAt(passenger, coordinates, 8)).toEqual({ lon: 121.1, lat: 25.1 });
     expect(passengerPositionAt(passenger, coordinates, 14)).toEqual({ lon: 121.2, lat: 25.2 });
   });
+
+  it('interpolates a ride along its intermediate stations by distance', () => {
+    const tripWithVia: RepresentativePassenger = {
+      ...passenger,
+      legs: passenger.legs.map((leg) => leg.kind === 'ride'
+        ? { ...leg, viaStationIds: ['s1', 's2', 's3'] }
+        : leg),
+    };
+    const coordinates = new Map([
+      ['s1', { lon: 0, lat: 0 }],
+      ['s2', { lon: 1, lat: 0 }],
+      ['s3', { lon: 1, lat: 1 }],
+    ]);
+
+    const position = passengerPositionAt(tripWithVia, coordinates, 8);
+    expect(position?.lon).toBeCloseTo(1, 2);
+    expect(position?.lat).toBeCloseTo(0, 1);
+  });
+
+  it('falls back to straight interpolation when a via station is missing', () => {
+    const tripWithVia: RepresentativePassenger = {
+      ...passenger,
+      legs: passenger.legs.map((leg) => leg.kind === 'ride'
+        ? { ...leg, viaStationIds: ['s1', 's2', 's3'] }
+        : leg),
+    };
+    const coordinates = new Map([
+      ['s1', { lon: 121, lat: 25 }],
+      ['s3', { lon: 121.2, lat: 25.2 }],
+    ]);
+
+    expect(passengerPositionAt(tripWithVia, coordinates, 8)).toEqual({ lon: 121.1, lat: 25.1 });
+  });
 });

@@ -1,5 +1,6 @@
 import type { TrainPosition } from '../sim/protocol';
 import type { RepresentativePassenger } from '../sim/transit/representative';
+import { haversineKm } from './network';
 
 export type FollowState =
   | { kind: 'idle' }
@@ -36,6 +37,56 @@ export interface FollowTrainInfo extends FollowTrainDisplay {
 export interface PassengerCoordinate {
   lon: number;
   lat: number;
+}
+
+function interpolateStraight(
+  from: PassengerCoordinate,
+  to: PassengerCoordinate,
+  fraction: number,
+): PassengerCoordinate {
+  return {
+    lon: from.lon + (to.lon - from.lon) * fraction,
+    lat: from.lat + (to.lat - from.lat) * fraction,
+  };
+}
+
+function interpolateRide(
+  leg: RepresentativePassenger['legs'][number],
+  from: PassengerCoordinate,
+  to: PassengerCoordinate,
+  fraction: number,
+  stationCoords: ReadonlyMap<string, PassengerCoordinate>,
+): PassengerCoordinate {
+  const viaStationIds = leg.viaStationIds;
+  if (
+    !leg.fromStationId
+    || !leg.toStationId
+    || !viaStationIds
+    || viaStationIds.length < 2
+    || viaStationIds[0] !== leg.fromStationId
+    || viaStationIds[viaStationIds.length - 1] !== leg.toStationId
+  ) return interpolateStraight(from, to, fraction);
+
+  const route = viaStationIds.map((stationId) => stationCoords.get(stationId));
+  if (route.some((coordinate) => !coordinate)) return interpolateStraight(from, to, fraction);
+  const coordinates = route as PassengerCoordinate[];
+  const distances = coordinates.slice(1).map((coordinate, index) => {
+    const previous = coordinates[index]!;
+    return haversineKm(previous.lon, previous.lat, coordinate.lon, coordinate.lat);
+  });
+  const totalDistance = distances.reduce((total, distance) => total + distance, 0);
+  if (!Number.isFinite(totalDistance) || totalDistance <= 0) return interpolateStraight(from, to, fraction);
+
+  let distanceAlongRoute = totalDistance * fraction;
+  for (let index = 0; index < distances.length; index += 1) {
+    const segmentDistance = distances[index]!;
+    if (distanceAlongRoute <= segmentDistance || index === distances.length - 1) {
+      const segmentFraction = segmentDistance === 0 ? 0 : distanceAlongRoute / segmentDistance;
+      return interpolateStraight(coordinates[index]!, coordinates[index + 1]!, Math.min(1, segmentFraction));
+    }
+    distanceAlongRoute -= segmentDistance;
+  }
+  return { ...to };
 }
 
 const IDLE: FollowState = { kind: 'idle' };
@@ -89,10 +140,7 @@ export function passengerPositionAt(
     let position = from ?? to ?? previousPosition;
     if (leg.kind === 'ride' && from && to) {
       const fraction = duration === 0 ? 1 : Math.min(1, elapsed / duration);
-      position = {
-        lon: from.lon + (to.lon - from.lon) * fraction,
-        lat: from.lat + (to.lat - from.lat) * fraction,
-      };
+      position = interpolateRide(leg, from, to, fraction, stationCoords);
     }
     if (position) previousPosition = position;
     if (elapsed < duration) {
