@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RepresentativePassenger } from '../../src/sim/transit/representative';
-import { createPassengerRequestHandler } from '../../src/ui/passenger-request';
+import { createPassengerRequestHandler, nextPassengerStationId } from '../../src/ui/passenger-request';
 
 const trip: RepresentativePassenger = {
   selectedStationId: 's1',
@@ -13,6 +13,54 @@ const trip: RepresentativePassenger = {
   doorToDoorMinutes: 10,
   alternativeMinutes: null,
 };
+
+describe('next passenger station', () => {
+  it('returns the next station in trip order', () => {
+    expect(nextPassengerStationId({
+      ...trip,
+      selectedStationId: 's2',
+      startStationId: 's1',
+      endStationId: 's3',
+      legs: [
+        { kind: 'ride', minutes: 4, fromStationId: 's1', toStationId: 's2' },
+        { kind: 'ride', minutes: 5, fromStationId: 's2', toStationId: 's3' },
+      ],
+    })).toBe('s3');
+  });
+
+  it('wraps from the final station to the first', () => {
+    expect(nextPassengerStationId({
+      ...trip,
+      selectedStationId: 's3',
+      startStationId: 's1',
+      endStationId: 's3',
+      legs: [{ kind: 'ride', minutes: 9, fromStationId: 's1', toStationId: 's3' }],
+    })).toBe('s1');
+  });
+
+  it('deduplicates stations while preserving their first-seen order', () => {
+    expect(nextPassengerStationId({
+      ...trip,
+      selectedStationId: 's3',
+      startStationId: 's1',
+      endStationId: 's2',
+      legs: [
+        { kind: 'ride', minutes: 4, fromStationId: 's1', toStationId: 's2' },
+        { kind: 'ride', minutes: 5, fromStationId: 's2', toStationId: 's3' },
+      ],
+    })).toBe('s1');
+  });
+
+  it('returns undefined when the trip has only one distinct station', () => {
+    expect(nextPassengerStationId({
+      ...trip,
+      selectedStationId: 's1',
+      startStationId: 's1',
+      endStationId: 's1',
+      legs: [{ kind: 'ride', minutes: 0, fromStationId: 's1', toStationId: 's1' }],
+    })).toBeUndefined();
+  });
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
