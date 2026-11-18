@@ -153,7 +153,7 @@ async function startApp(): Promise<void> {
   }
   const region = REGIONS[restoredPayload?.region ?? DEFAULT_REGION_ID];
   ui.enterMetroButton.textContent = `${region.name}都會`;
-  ui.extendRegionButton.hidden = region.id !== 'northNorth';
+  ui.extendRegionButton.hidden = true;
   const villageLoadingStatus = `載入${region.name}村里資料中…`;
   if (restoredPayload) selectedSimSpeed = restoredPayload.simulation.speed;
   const networkHistory = new History(restoredPayload?.network ?? createEmptyNetwork());
@@ -183,10 +183,11 @@ async function startApp(): Promise<void> {
     updateRenderActivity: (running, hasVisibleTrains) => renderScheduler?.setSimulationActivity(running, hasVisibleTrains),
   });
   let regionExtensionConfirmationTimer: number | undefined;
+  let regionExtensionInProgress = false;
   ui.extendRegionButton.addEventListener('click', () => {
     const button = ui.extendRegionButton;
     if (regionExtensionConfirmationTimer === undefined) {
-      button.textContent = '確定延伸？乘客習慣會重新累積';
+      button.textContent = '確定延伸？模擬時鐘與乘客習慣會重新開始';
       regionExtensionConfirmationTimer = window.setTimeout(() => {
         regionExtensionConfirmationTimer = undefined;
         button.textContent = '延伸到桃園';
@@ -196,6 +197,7 @@ async function startApp(): Promise<void> {
 
     window.clearTimeout(regionExtensionConfirmationTimer);
     regionExtensionConfirmationTimer = undefined;
+    regionExtensionInProgress = true;
     button.disabled = true;
     void (async () => {
       try {
@@ -211,6 +213,7 @@ async function startApp(): Promise<void> {
       } catch (error) {
         console.error('延伸到桃園失敗。', error);
         showStatus('延伸到桃園失敗，請稍後再試。');
+        regionExtensionInProgress = false;
         button.textContent = '延伸到桃園';
         button.disabled = false;
       }
@@ -289,7 +292,7 @@ async function startApp(): Promise<void> {
       Boolean(transitClient && !transitClient.getStatus().paused),
       mapRenderer?.hasVisibleTrains ?? false,
     );
-    if (document.hidden) {
+    if (document.hidden && !regionExtensionInProgress) {
       void panelController.saveLiveState().catch((error: unknown) => {
         console.info('Autosave could not be written.', error);
       });
@@ -420,6 +423,7 @@ async function startApp(): Promise<void> {
     (active: boolean) => {
       ui.enterMetroButton.hidden = active;
       ui.returnIslandButton.hidden = !active;
+      ui.extendRegionButton.hidden = region.id !== 'northNorth' || !active;
       ui.infoCard.hidden = true;
       ui.densityLegend.hidden = !active || !hasVillageGeometry;
       ui.editorToolbar.hidden = !active || !hasVillageGeometry;
