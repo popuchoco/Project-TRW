@@ -444,6 +444,37 @@ describe('transit worker protocol guards', () => {
     })).toBe(false);
   });
 
+  it('allows missing county flows and validates them in snapshots and saves', () => {
+    const withSnapshotCountyFlows = (countyFlows: unknown) => ({
+      ...transitSnapshot,
+      city: { ...transitSnapshot.city, countyFlows },
+    });
+    const withSaveCountyFlows = (countyFlows: unknown) => ({
+      ...saveState,
+      transit: {
+        ...saveState.transit,
+        snapshot: { ...summary, city: { ...summary.city, countyFlows } },
+      },
+    });
+    const validCountyFlows = [{ countyCode: '68000', trips: 12, fareRevenue: 34 }];
+
+    expect(isTransitWorkerSnapshot(transitSnapshot)).toBe(true);
+    expect(isTransitWorkerSaveState(saveState)).toBe(true);
+    expect(isTransitWorkerSnapshot(withSnapshotCountyFlows(validCountyFlows))).toBe(true);
+    expect(isTransitWorkerSaveState(withSaveCountyFlows(validCountyFlows))).toBe(true);
+
+    const invalidCountyFlows = [
+      [{ countyCode: '6800', trips: 12, fareRevenue: 34 }],
+      [{ countyCode: '68000', trips: -1, fareRevenue: 34 }],
+      [{ countyCode: '68000', trips: 12, fareRevenue: -1 }],
+      Array.from({ length: 65 }, () => ({ countyCode: '68000', trips: 1, fareRevenue: 1 })),
+    ];
+    for (const countyFlows of invalidCountyFlows) {
+      expect(isTransitWorkerSnapshot(withSnapshotCountyFlows(countyFlows))).toBe(false);
+      expect(isTransitWorkerSaveState(withSaveCountyFlows(countyFlows))).toBe(false);
+    }
+  });
+
   it('validates quality scores and accepts v2 saves whose older snapshots lack them', () => {
     const numericQuality = {
       wait: 80,

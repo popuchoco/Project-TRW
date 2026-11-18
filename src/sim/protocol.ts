@@ -337,6 +337,13 @@ function isStationFlows(value: unknown, stationCount: number): boolean {
   });
 }
 
+function isCountyFlows(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= 64 && value.every((flow: unknown) =>
+    isRecord(flow)
+      && typeof flow.countyCode === 'string' && /^\d{5}$/.test(flow.countyCode)
+      && isNonNegativeNumber(flow.trips) && isNonNegativeNumber(flow.fareRevenue));
+}
+
 function isTransitSummary(
   value: unknown,
   allowMissingQuality: boolean,
@@ -366,7 +373,8 @@ function isTransitSummary(
     || !isNonNegativeNumber(city.deniedBoardings) || !isNonNegativeNumber(city.transfers)
     || !isQualityOrMissingLegacy(city.quality, allowMissingQuality)
     || !isNonNegativeNumber(city.fareRevenue) || !isNonNegativeNumber(city.operatingCost)
-    || !isFiniteNumber(city.profitLossRatio)) return false;
+    || !isFiniteNumber(city.profitLossRatio)
+    || (city.countyFlows !== undefined && !isCountyFlows(city.countyFlows))) return false;
 
   for (const station of value.stations) {
     if (!isRecord(station) || typeof station.stationId !== 'string' || station.stationId.length === 0
