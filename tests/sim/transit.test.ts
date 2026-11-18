@@ -136,6 +136,42 @@ describe('TransitSim behavior', () => {
     expect(result.city.dailyRidership).toBeGreaterThan(0);
   });
 
+  it('scores each journey by its most crowded segment', () => {
+    const network: Network = {
+      nextId: 4,
+      stations: [
+        { id: 's1', name: '甲站', lon: 121.50, lat: 25.03 },
+        { id: 's2', name: '乙站', lon: 121.53, lat: 25.03 },
+        { id: 's3', name: '丙站', lon: 121.56, lat: 25.03 },
+      ],
+      lines: [{
+        id: 'l4', mode: 'brt', stationIds: ['s1', 's2', 's3'],
+        peakTrains: 100, offPeakTrains: 100, cars: 1, color: '#123456', name: '三站線',
+      }],
+    };
+    const villages: VillageDemandPoint[] = [
+      { code: 'A', population: 100_000, lon: 121.50, lat: 25.03 },
+      { code: 'B', population: 20_000, lon: 121.53, lat: 25.03 },
+      { code: 'C', population: 5_000, lon: 121.56, lat: 25.03 },
+    ];
+    const result = new TransitSim(villages, network).advance(GAME_DAY_MS);
+    const line = result.lines[0]!;
+    let segmentWeightedLoadFactor = 0;
+    let segmentPassengers = 0;
+    for (const flow of Object.values(line.sectionFlow)) {
+      for (const direction of [flow.forward, flow.backward]) {
+        for (const segment of direction) {
+          segmentWeightedLoadFactor += segment.load * segment.loadFactor;
+          segmentPassengers += segment.load;
+        }
+      }
+    }
+
+    expect(result.city.quality?.metrics?.averageLoadFactor).toBeGreaterThan(
+      segmentWeightedLoadFactor / segmentPassengers,
+    );
+  });
+
   it('approaches equilibrium ridership monotonically with the seven-day habit curve', () => {
     const sim = new TransitSim(TEST_VILLAGES, twoStationNetwork(1_000));
     const daily = [];
