@@ -12,7 +12,12 @@ import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../c
 import type { TransitSummarySnapshot } from '../sim/transit';
 import type { RepresentativePassenger } from '../sim/transit/representative';
 import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
-import { buildPassengerViewModel, createPassengerView, type PassengerStationNames } from './passenger-view';
+import {
+  buildPassengerViewModel,
+  createPassengerView,
+  type PassengerLineNames,
+  type PassengerStationNames,
+} from './passenger-view';
 import {
   createSectionFlowChart,
   sectionFlowFromSnapshot,
@@ -74,6 +79,7 @@ export interface SimulationPanels {
     info: FollowTrainInfo | undefined,
     passenger?: RepresentativePassenger,
     stationNames?: PassengerStationNames,
+    lineNames?: PassengerLineNames,
   ): void;
 }
 
@@ -421,12 +427,16 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     info: FollowTrainInfo | undefined,
     passenger?: RepresentativePassenger,
     stationNames: PassengerStationNames = new Map(),
+    lineNames: PassengerLineNames = new Map(),
   ): void => {
     follow.section.hidden = !info && !passenger;
     followDetails.hidden = !info;
     passengerDetails.replaceChildren();
     if (passenger) {
-      passengerDetails.append(createPassengerView(document, buildPassengerViewModel(passenger, stationNames)));
+      passengerDetails.append(createPassengerView(
+        document,
+        buildPassengerViewModel(passenger, stationNames, lineNames),
+      ));
     }
     if (!info) {
       followDetails.textContent = '';

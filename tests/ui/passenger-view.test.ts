@@ -11,7 +11,8 @@ const trip: RepresentativePassenger = {
   pathSignature: 'l1:s1>s2',
   legs: [
     { kind: 'walkIn', minutes: 1.5, toStationId: 's1' },
-    { kind: 'ride', minutes: 10, lineId: '紅線', fromStationId: 's1', toStationId: 's2' },
+    { kind: 'wait', minutes: 2, lineId: 'l1', fromStationId: 's1', toStationId: 's1' },
+    { kind: 'ride', minutes: 10, lineId: 'l1', fromStationId: 's1', toStationId: 's2' },
   ],
   doorToDoorMinutes: 11.5,
   alternativeMinutes: 15,
@@ -44,16 +45,24 @@ describe('representative passenger view', () => {
     const model = buildPassengerViewModel(trip, new Map([
       ['s1', '中央站'],
       ['s2', '市政府站'],
-    ]));
+    ]), new Map([['l1', '紅線']]));
 
     expect(model.label).toBe('模擬值／代表旅客');
     expect(model.legs).toEqual([
       '步行至 中央站・1.5 分',
+      '等候 紅線（中央站）・2 分',
       '紅線：中央站 → 市政府站・10 分',
     ]);
     expect(model.totalText).toBe('門到門時間：11.5 分');
     expect(model.whyText).toContain('此行程 11.5 分；替代方案 15 分');
     expect(model.whyText).toContain('此行程較快 3.5 分');
+  });
+
+  it('falls back to a line id when the line name is unknown', () => {
+    const model = buildPassengerViewModel(trip, new Map(), new Map());
+
+    expect(model.legs).toContain('等候 l1（s1）・2 分');
+    expect(model.legs).toContain('l1：s1 → s2・10 分');
   });
 
   it('writes all visible content as text nodes in a small fake DOM', () => {

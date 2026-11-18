@@ -56,6 +56,7 @@ interface CityControllerDeps {
 }
 
 export interface CityController {
+  getNetworkVersion(): number;
   getSelectedNetworkItem(): NetworkSelection;
   updateEditorControls(): void;
   updateSpacingHint(network: Network): void;
@@ -85,6 +86,7 @@ export function createCityController({
   let activeEditorTool: EditorTool = 'select';
   let newLineMode: TransitModeId = 'brt';
   let followState: FollowState = { kind: 'idle' };
+  let networkVersion = 0;
 
   const transitionFollow = (event: FollowEvent): void => {
     const next = followReducer(followState, event);
@@ -123,6 +125,7 @@ export function createCityController({
       : '';
   };
   const syncNetwork = (network: Network): void => {
+    networkVersion += 1;
     const followedLineId = followState.kind === 'followingTrain' ? followState.lineId : undefined;
     if (followedLineId && !network.lines.some(({ id }) => id === followedLineId)) {
       transitionFollow({ type: 'lineDeleted', lineId: followedLineId });
@@ -403,6 +406,7 @@ export function createCityController({
   };
 
   return {
+    getNetworkVersion: () => networkVersion,
     getSelectedNetworkItem: () => selectedNetworkItem,
     updateEditorControls,
     updateSpacingHint,

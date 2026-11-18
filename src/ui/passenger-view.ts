@@ -8,6 +8,7 @@ export interface PassengerViewModel {
 }
 
 export type PassengerStationNames = ReadonlyMap<string, string>;
+export type PassengerLineNames = ReadonlyMap<string, string>;
 
 const minuteFormat = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 1 });
 
@@ -20,15 +21,20 @@ function stationName(stationId: string | undefined, names: PassengerStationNames
   return names.get(stationId) ?? stationId;
 }
 
-function legDescription(leg: RepresentativePassengerLeg, names: PassengerStationNames): string {
+function legDescription(
+  leg: RepresentativePassengerLeg,
+  names: PassengerStationNames,
+  lineNames: PassengerLineNames,
+): string {
   const from = stationName(leg.fromStationId, names);
   const to = stationName(leg.toStationId, names);
+  const lineName = leg.lineId ? lineNames.get(leg.lineId) ?? leg.lineId : undefined;
   const description = leg.kind === 'walkIn'
     ? `步行至 ${to}`
     : leg.kind === 'wait'
-      ? `等候${leg.lineId ? ` ${leg.lineId}` : ''}（${from}）`
+      ? `等候${lineName ? ` ${lineName}` : ''}（${from}）`
       : leg.kind === 'ride'
-        ? `${leg.lineId ? `${leg.lineId}：` : ''}${from} → ${to}`
+        ? `${lineName ? `${lineName}：` : ''}${from} → ${to}`
         : leg.kind === 'transfer'
           ? `於 ${from} 轉乘`
           : `步行離開 ${from}`;
@@ -39,6 +45,7 @@ function legDescription(leg: RepresentativePassengerLeg, names: PassengerStation
 export function buildPassengerViewModel(
   trip: RepresentativePassenger,
   stationNames: PassengerStationNames = new Map(),
+  lineNames: PassengerLineNames = new Map(),
 ): PassengerViewModel {
   const chosen = trip.doorToDoorMinutes;
   let whyText: string;
@@ -55,7 +62,7 @@ export function buildPassengerViewModel(
 
   return {
     label: '模擬值／代表旅客',
-    legs: trip.legs.map((leg) => legDescription(leg, stationNames)),
+    legs: trip.legs.map((leg) => legDescription(leg, stationNames, lineNames)),
     totalText: `門到門時間：${formatMinutes(chosen)}`,
     whyText,
   };
