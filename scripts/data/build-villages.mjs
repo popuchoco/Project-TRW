@@ -25,12 +25,22 @@ import {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const rawDir = resolve(repoRoot, 'data/raw');
 const outputDir = resolve(repoRoot, 'public/data');
-const COUNTY_CODES = new Set(['63000', '65000']);
+const REGIONS = [{
+  id: 'northNorth',
+  countyCodes: ['63000', '65000'],
+  fileStem: 'villages-6300065000',
+  manifestFilename: 'villages-manifest.json',
+  layerName: 'north-north',
+  expected: {
+    villages: 1_512,
+    noteVillages: 17,
+    populationRows: 1_495,
+    population: 6_451_184,
+    townCodes: 41,
+  },
+}];
 const SIMPLIFY_PERCENT = 3;
 const TOPOLOGY_QUANTIZATION = 1_000_000;
-const ATTRIBUTE_FILENAME = 'villages-6300065000.json';
-const TOPOLOGY_FILENAME = 'villages-6300065000.topo.json';
-const MANIFEST_FILENAME = 'villages-manifest.json';
 const PRIVATE_USE = /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
 
 function assert(condition, message) {
@@ -427,209 +437,234 @@ const townManifest = JSON.parse(townManifestBytes.toString('utf8'));
 assert(townManifest.dataVersion === SOURCE_VERSION, `Expected town boundary version ${SOURCE_VERSION}`);
 
 const rawVillageCollection = await readVillageLayer(villageArchive);
-const boundaryFeatures = rawVillageCollection.features.filter(({ properties }) =>
-  COUNTY_CODES.has(String(properties.COUNTYCODE)),
-);
-assert(boundaryFeatures.length === 1_512, `Expected 1,512 Taipei/New Taipei villages; got ${boundaryFeatures.length}`);
-
-const villages = boundaryFeatures.map(({ properties, geometry }) => {
-  const code = String(properties.VILLCODE);
-  const townCode = String(properties.TOWNCODE);
-  assert(/^[A-Z0-9]{11}$/.test(code), `Invalid 11-character VILLCODE in boundary data: ${code}`);
-  assert(COUNTY_CODES.has(String(properties.COUNTYCODE)), `Unexpected COUNTYCODE for ${code}`);
-  assert(typeof properties.VILLNAME === 'string', `Missing VILLNAME for ${code}`);
-  assert(properties.VILLNAME.length > 0 || properties.NOTE === '未編定村里', `Unexpected blank VILLNAME for ${code}`);
-  assert(!PRIVATE_USE.test(properties.VILLNAME), `Boundary VILLNAME contains a private-use character for ${code}`);
-  return {
-    VILLCODE: code,
-    name: String(properties.VILLNAME),
-    TOWNCODE: townCode,
-    note: String(properties.NOTE ?? ''),
-    type: geometry.type,
-    coordinates: geometry.coordinates,
-    properties: { VILLCODE: code },
-    geometry,
-  };
-}).sort(sortByCode);
-const villageByCode = new Map(villages.map((village) => [village.VILLCODE, village]));
-assert(villageByCode.size === villages.length, 'Boundary data contains duplicate VILLCODEs');
-
-const boundaryTownCodes = [...new Set(villages.map(({ TOWNCODE }) => TOWNCODE))].sort();
-const townRecords = townManifest.towns.filter(({ countyCode }) => COUNTY_CODES.has(countyCode));
-const townAssetCodes = townRecords.map(({ code }) => code).sort();
-const onlyInVillages = boundaryTownCodes.filter((code) => !townAssetCodes.includes(code));
-const onlyInTownAssets = townAssetCodes.filter((code) => !boundaryTownCodes.includes(code));
-assert(
-  boundaryTownCodes.length === 41 && onlyInVillages.length === 0 && onlyInTownAssets.length === 0,
-  `北北 TOWNCODE mismatch: only village boundary=${onlyInVillages.join(',') || '(none)'}; ` +
-    `only town assets=${onlyInTownAssets.join(',') || '(none)'}`,
-);
-const townNames = new Map(townRecords.map(({ code, name }) => [code, name]));
-
-const populationByCode = readPopulation(populationBytes.toString('utf8'), villageByCode);
-const noteCodes = villages.filter(({ note }) => note === '未編定村里').map(({ VILLCODE }) => VILLCODE);
-assert(noteCodes.length === 17, `Expected 17 NOTE=未編定村里 features; got ${noteCodes.length}`);
-const unmatchedCodes = villages.filter(({ VILLCODE }) => !populationByCode.has(VILLCODE)).map(({ VILLCODE }) => VILLCODE);
-assert(
-  JSON.stringify(unmatchedCodes) === JSON.stringify(noteCodes.sort()),
-  `Unmatched population codes must exactly equal NOTE=未編定村里; unmatched=${unmatchedCodes.join(',')}`,
-);
-assert(populationByCode.size === 1_495, `Expected 1,495 villages with population rows; got ${populationByCode.size}`);
-const populationTotal = [...populationByCode.values()].reduce((total, row) => total + row.population, 0);
-assert(populationTotal === 6_451_184, `Expected total population 6,451,184; got ${populationTotal}`);
-
-const inputName = 'north-north.geojson';
-const simplifiedName = 'north-north-simplified.geojson';
-const selectedCollection = {
-  type: 'FeatureCollection',
-  features: villages.map(({ geometry, VILLCODE }) => ({
-    type: 'Feature',
-    properties: { VILLCODE },
-    geometry,
-  })),
-};
-const simplifiedOutput = await mapshaper.applyCommands(
-  ['-i', inputName, '-simplify', `${SIMPLIFY_PERCENT}%`, 'keep-shapes', '-o', 'format=geojson', simplifiedName],
-  { [inputName]: JSON.stringify(selectedCollection) },
-);
-assert(simplifiedOutput[simplifiedName], 'Mapshaper did not return simplified village geometries');
-const simplifiedCollection = JSON.parse(simplifiedOutput[simplifiedName]);
-assert(simplifiedCollection.features.length === 1_512, `Simplification changed village count to ${simplifiedCollection.features.length}`);
-const simplifiedCodes = simplifiedCollection.features.map(({ properties }) => String(properties.VILLCODE)).sort();
-assert(JSON.stringify(simplifiedCodes) === JSON.stringify([...villageByCode.keys()].sort()), 'Simplification changed the village VILLCODE set');
-
-const topoName = 'north-north-topology.json';
-const topologyOutput = await mapshaper.applyCommands(
-  [
-    '-i', simplifiedName,
-    '-o', 'format=topojson', `quantization=${TOPOLOGY_QUANTIZATION}`, topoName,
-  ],
-  { [simplifiedName]: simplifiedOutput[simplifiedName] },
-);
-assert(topologyOutput[topoName], 'Mapshaper did not return village TopoJSON');
-const topology = JSON.parse(topologyOutput[topoName]);
-assert(topology.type === 'Topology' && Array.isArray(topology.arcs), 'Mapshaper produced an invalid village TopoJSON');
-const objectName = topologyObjectName(topology);
-const topoGeometries = topology.objects[objectName];
-const propertyGeometries = topoGeometries.type === 'GeometryCollection' ? topoGeometries.geometries : [topoGeometries];
-assert(propertyGeometries.length === 1_512, `Topology contains ${propertyGeometries.length} villages`);
-const topologyCodes = propertyGeometries.map((geometry) => String(geometry.properties?.VILLCODE ?? geometry.id ?? ''));
-assert(
-  JSON.stringify(topologyCodes) === JSON.stringify([...topologyCodes].sort()),
-  'Village TopoJSON features are not sorted by VILLCODE',
-);
-for (const geometry of propertyGeometries) {
-  const keys = Object.keys(geometry.properties ?? {});
-  assert(keys.length === 1 && keys[0] === 'VILLCODE', 'Village TopoJSON must keep only VILLCODE as a property');
+for (const region of REGIONS) {
+  await buildRegion(region, rawVillageCollection, populationBytes.toString('utf8'), townManifest);
 }
 
-const simplifiedGeometryByCode = new Map(simplifiedCollection.features.map(({ properties, geometry }) => [
-  String(properties.VILLCODE), geometry,
-]));
-const decodedByCode = new Map(decodeTopology(topology, objectName).map((feature) => [feature.VILLCODE, feature.geometry]));
-assert(decodedByCode.size === 1_512, `Decoded topology has ${decodedByCode.size} villages`);
-const attributes = villages.map((village) => {
-  const population = populationByCode.get(village.VILLCODE);
-  const geometry = decodedByCode.get(village.VILLCODE);
-  assert(geometry, `Missing simplified geometry for ${village.VILLCODE}`);
-  const point = demandPoint(geometry);
-  assert(pointInMultiPolygon(geometry.coordinates, point[0], point[1]), `Demand point is outside ${village.VILLCODE}`);
-  assert(simplifiedGeometryByCode.has(village.VILLCODE), `Missing simplified source feature ${village.VILLCODE}`);
-  const townName = townNames.get(village.TOWNCODE);
-  assert(townName, `Missing town name for TOWNCODE ${village.TOWNCODE}`);
-  return {
-    VILLCODE: village.VILLCODE,
-    name: village.name,
-    TOWNCODE: village.TOWNCODE,
-    townName,
-    population: population?.population ?? 0,
-    households: population?.households ?? 0,
-    populationMatched: population !== undefined,
-    demandPoint: point,
+async function buildRegion(region, rawVillageCollection, populationCsvText, townManifest) {
+  const countyCodes = new Set(region.countyCodes);
+  const { expected } = region;
+  const attributeFilename = `${region.fileStem}.json`;
+  const topologyFilename = `${region.fileStem}.topo.json`;
+  const boundaryFeatures = rawVillageCollection.features.filter(({ properties }) =>
+    countyCodes.has(String(properties.COUNTYCODE)),
+  );
+  assert(
+    boundaryFeatures.length === expected.villages,
+    `Expected ${expected.villages} ${region.id} villages; got ${boundaryFeatures.length}`,
+  );
+
+  const villages = boundaryFeatures.map(({ properties, geometry }) => {
+    const code = String(properties.VILLCODE);
+    const townCode = String(properties.TOWNCODE);
+    assert(/^[A-Z0-9]{11}$/.test(code), `Invalid 11-character VILLCODE in boundary data: ${code}`);
+    assert(countyCodes.has(String(properties.COUNTYCODE)), `Unexpected COUNTYCODE for ${code}`);
+    assert(typeof properties.VILLNAME === 'string', `Missing VILLNAME for ${code}`);
+    assert(properties.VILLNAME.length > 0 || properties.NOTE === '未編定村里', `Unexpected blank VILLNAME for ${code}`);
+    assert(!PRIVATE_USE.test(properties.VILLNAME), `Boundary VILLNAME contains a private-use character for ${code}`);
+    return {
+      VILLCODE: code,
+      name: String(properties.VILLNAME),
+      TOWNCODE: townCode,
+      note: String(properties.NOTE ?? ''),
+      type: geometry.type,
+      coordinates: geometry.coordinates,
+      properties: { VILLCODE: code },
+      geometry,
+    };
+  }).sort(sortByCode);
+  const villageByCode = new Map(villages.map((village) => [village.VILLCODE, village]));
+  assert(villageByCode.size === villages.length, 'Boundary data contains duplicate VILLCODEs');
+
+  const boundaryTownCodes = [...new Set(villages.map(({ TOWNCODE }) => TOWNCODE))].sort();
+  const townRecords = townManifest.towns.filter(({ countyCode }) => countyCodes.has(countyCode));
+  const townAssetCodes = townRecords.map(({ code }) => code).sort();
+  const onlyInVillages = boundaryTownCodes.filter((code) => !townAssetCodes.includes(code));
+  const onlyInTownAssets = townAssetCodes.filter((code) => !boundaryTownCodes.includes(code));
+  assert(
+    boundaryTownCodes.length === expected.townCodes && onlyInVillages.length === 0 && onlyInTownAssets.length === 0,
+    `${region.id} TOWNCODE mismatch: only village boundary=${onlyInVillages.join(',') || '(none)'}; ` +
+      `only town assets=${onlyInTownAssets.join(',') || '(none)'}`,
+  );
+  const townNames = new Map(townRecords.map(({ code, name }) => [code, name]));
+
+  const populationByCode = readPopulation(populationCsvText, villageByCode);
+  const noteCodes = villages.filter(({ note }) => note === '未編定村里').map(({ VILLCODE }) => VILLCODE);
+  assert(
+    noteCodes.length === expected.noteVillages,
+    `Expected ${expected.noteVillages} NOTE=未編定村里 features; got ${noteCodes.length}`,
+  );
+  const unmatchedCodes = villages.filter(({ VILLCODE }) => !populationByCode.has(VILLCODE)).map(({ VILLCODE }) => VILLCODE);
+  assert(
+    JSON.stringify(unmatchedCodes) === JSON.stringify(noteCodes.sort()),
+    `Unmatched population codes must exactly equal NOTE=未編定村里; unmatched=${unmatchedCodes.join(',')}`,
+  );
+  assert(
+    populationByCode.size === expected.populationRows,
+    `Expected ${expected.populationRows} villages with population rows; got ${populationByCode.size}`,
+  );
+  const populationTotal = [...populationByCode.values()].reduce((total, row) => total + row.population, 0);
+  assert(
+    populationTotal === expected.population,
+    `Expected total population ${expected.population}; got ${populationTotal}`,
+  );
+
+  const inputName = `${region.layerName}.geojson`;
+  const simplifiedName = `${region.layerName}-simplified.geojson`;
+  const selectedCollection = {
+    type: 'FeatureCollection',
+    features: villages.map(({ geometry, VILLCODE }) => ({
+      type: 'Feature',
+      properties: { VILLCODE },
+      geometry,
+    })),
   };
-});
-assert(attributes.every(({ VILLCODE }, index) => index === 0 || attributes[index - 1].VILLCODE < VILLCODE), 'Village attributes are not sorted by VILLCODE');
+  const simplifiedOutput = await mapshaper.applyCommands(
+    ['-i', inputName, '-simplify', `${SIMPLIFY_PERCENT}%`, 'keep-shapes', '-o', 'format=geojson', simplifiedName],
+    { [inputName]: JSON.stringify(selectedCollection) },
+  );
+  assert(simplifiedOutput[simplifiedName], 'Mapshaper did not return simplified village geometries');
+  const simplifiedCollection = JSON.parse(simplifiedOutput[simplifiedName]);
+  assert(
+    simplifiedCollection.features.length === expected.villages,
+    `Simplification changed village count to ${simplifiedCollection.features.length}`,
+  );
+  const simplifiedCodes = simplifiedCollection.features.map(({ properties }) => String(properties.VILLCODE)).sort();
+  assert(JSON.stringify(simplifiedCodes) === JSON.stringify([...villageByCode.keys()].sort()), 'Simplification changed the village VILLCODE set');
 
-const topologyText = JSON.stringify(topology);
-const attributesText = JSON.stringify(attributes);
-assert(!PRIVATE_USE.test(topologyText), 'Village TopoJSON contains a Unicode private-use character');
-assert(!PRIVATE_USE.test(attributesText), 'Village attributes contain a Unicode private-use character');
-const topologyBuffer = Buffer.from(topologyText);
-const attributesBuffer = Buffer.from(attributesText);
-const topologyAsset = {
-  path: TOPOLOGY_FILENAME,
-  bytes: topologyBuffer.byteLength,
-  sha256: sha256(topologyBuffer),
-  gzipBytes: gzipSync(topologyBuffer, { level: 9, mtime: 0 }).byteLength,
-  quantization: TOPOLOGY_QUANTIZATION,
-  objectName,
-};
-const attributesAsset = {
-  path: ATTRIBUTE_FILENAME,
-  bytes: attributesBuffer.byteLength,
-  sha256: sha256(attributesBuffer),
-  gzipBytes: gzipSync(attributesBuffer, { level: 9, mtime: 0 }).byteLength,
-};
-const manifest = {
-  schemaVersion: 1,
-  dataVersion: `${VILLAGE_SOURCE_VERSION}+${POPULATION_SOURCE_VERSION}`,
-  countyCodes: [...COUNTY_CODES].sort(),
-  villageCount: villages.length,
-  populationMatchedCount: populationByCode.size,
-  unmatchedCount: unmatchedCodes.length,
-  unmatchedCodes,
-  unmatchedReason: 'NOTE=未編定村里',
-  populationTotal,
-  townCodeCount: boundaryTownCodes.length,
-  townCodes: boundaryTownCodes,
-  townBoundaryVersion: SOURCE_VERSION,
-  nameRule: 'Display names use boundary VILLNAME; square brackets are preserved exactly as supplied.',
-  simplification: {
-    method: 'Mapshaper simplify with keep-shapes; TopoJSON encodes shared boundaries as shared arcs.',
-    retainedPercent: SIMPLIFY_PERCENT,
-    rationale: '3% retains more village outline detail while the attribute data stays in a separate compact JSON file.',
-  },
-  license: { name: OPEN_DATA_LICENSE_NAME, url: OPEN_DATA_LICENSE_URL },
-  sources: [
-    {
-      agency: '內政部國土測繪中心',
-      name: '村里界圖(TWD97經緯度)',
-      version: VILLAGE_SOURCE_VERSION,
-      sourceUrl: VILLAGE_SOURCE_URL,
-      downloadUrl: VILLAGE_SOURCE_DOWNLOAD_URL,
-      license: { name: OPEN_DATA_LICENSE_NAME, url: OPEN_DATA_LICENSE_URL },
-      rawFilename: VILLAGE_SOURCE_FILENAME,
-      rawBytes: VILLAGE_SOURCE_BYTES,
-      rawSha256: VILLAGE_SOURCE_SHA256,
+  const topoName = `${region.layerName}-topology.json`;
+  const topologyOutput = await mapshaper.applyCommands(
+    [
+      '-i', simplifiedName,
+      '-o', 'format=topojson', `quantization=${TOPOLOGY_QUANTIZATION}`, topoName,
+    ],
+    { [simplifiedName]: simplifiedOutput[simplifiedName] },
+  );
+  assert(topologyOutput[topoName], 'Mapshaper did not return village TopoJSON');
+  const topology = JSON.parse(topologyOutput[topoName]);
+  assert(topology.type === 'Topology' && Array.isArray(topology.arcs), 'Mapshaper produced an invalid village TopoJSON');
+  const objectName = topologyObjectName(topology);
+  const topoGeometries = topology.objects[objectName];
+  const propertyGeometries = topoGeometries.type === 'GeometryCollection' ? topoGeometries.geometries : [topoGeometries];
+  assert(propertyGeometries.length === expected.villages, `Topology contains ${propertyGeometries.length} villages`);
+  const topologyCodes = propertyGeometries.map((geometry) => String(geometry.properties?.VILLCODE ?? geometry.id ?? ''));
+  assert(
+    JSON.stringify(topologyCodes) === JSON.stringify([...topologyCodes].sort()),
+    'Village TopoJSON features are not sorted by VILLCODE',
+  );
+  for (const geometry of propertyGeometries) {
+    const keys = Object.keys(geometry.properties ?? {});
+    assert(keys.length === 1 && keys[0] === 'VILLCODE', 'Village TopoJSON must keep only VILLCODE as a property');
+  }
+
+  const simplifiedGeometryByCode = new Map(simplifiedCollection.features.map(({ properties, geometry }) => [
+    String(properties.VILLCODE), geometry,
+  ]));
+  const decodedByCode = new Map(decodeTopology(topology, objectName).map((feature) => [feature.VILLCODE, feature.geometry]));
+  assert(decodedByCode.size === expected.villages, `Decoded topology has ${decodedByCode.size} villages`);
+  const attributes = villages.map((village) => {
+    const population = populationByCode.get(village.VILLCODE);
+    const geometry = decodedByCode.get(village.VILLCODE);
+    assert(geometry, `Missing simplified geometry for ${village.VILLCODE}`);
+    const point = demandPoint(geometry);
+    assert(pointInMultiPolygon(geometry.coordinates, point[0], point[1]), `Demand point is outside ${village.VILLCODE}`);
+    assert(simplifiedGeometryByCode.has(village.VILLCODE), `Missing simplified source feature ${village.VILLCODE}`);
+    const townName = townNames.get(village.TOWNCODE);
+    assert(townName, `Missing town name for TOWNCODE ${village.TOWNCODE}`);
+    return {
+      VILLCODE: village.VILLCODE,
+      name: village.name,
+      TOWNCODE: village.TOWNCODE,
+      townName,
+      population: population?.population ?? 0,
+      households: population?.households ?? 0,
+      populationMatched: population !== undefined,
+      demandPoint: point,
+    };
+  });
+  assert(attributes.every(({ VILLCODE }, index) => index === 0 || attributes[index - 1].VILLCODE < VILLCODE), 'Village attributes are not sorted by VILLCODE');
+
+  const topologyText = JSON.stringify(topology);
+  const attributesText = JSON.stringify(attributes);
+  assert(!PRIVATE_USE.test(topologyText), 'Village TopoJSON contains a Unicode private-use character');
+  assert(!PRIVATE_USE.test(attributesText), 'Village attributes contain a Unicode private-use character');
+  const topologyBuffer = Buffer.from(topologyText);
+  const attributesBuffer = Buffer.from(attributesText);
+  const topologyAsset = {
+    path: topologyFilename,
+    bytes: topologyBuffer.byteLength,
+    sha256: sha256(topologyBuffer),
+    gzipBytes: gzipSync(topologyBuffer, { level: 9, mtime: 0 }).byteLength,
+    quantization: TOPOLOGY_QUANTIZATION,
+    objectName,
+  };
+  const attributesAsset = {
+    path: attributeFilename,
+    bytes: attributesBuffer.byteLength,
+    sha256: sha256(attributesBuffer),
+    gzipBytes: gzipSync(attributesBuffer, { level: 9, mtime: 0 }).byteLength,
+  };
+  const manifest = {
+    schemaVersion: 1,
+    dataVersion: `${VILLAGE_SOURCE_VERSION}+${POPULATION_SOURCE_VERSION}`,
+    countyCodes: [...countyCodes].sort(),
+    villageCount: villages.length,
+    populationMatchedCount: populationByCode.size,
+    unmatchedCount: unmatchedCodes.length,
+    unmatchedCodes,
+    unmatchedReason: 'NOTE=未編定村里',
+    populationTotal,
+    townCodeCount: boundaryTownCodes.length,
+    townCodes: boundaryTownCodes,
+    townBoundaryVersion: SOURCE_VERSION,
+    nameRule: 'Display names use boundary VILLNAME; square brackets are preserved exactly as supplied.',
+    simplification: {
+      method: 'Mapshaper simplify with keep-shapes; TopoJSON encodes shared boundaries as shared arcs.',
+      retainedPercent: SIMPLIFY_PERCENT,
+      rationale: '3% retains more village outline detail while the attribute data stays in a separate compact JSON file.',
     },
-    {
-      agency: '內政部戶政司',
-      name: '村里戶數、單一年齡人口（新增區域代碼）',
-      version: POPULATION_SOURCE_VERSION,
-      sourceUrl: POPULATION_SOURCE_URL,
-      downloadUrl: POPULATION_SOURCE_DOWNLOAD_URL,
-      license: { name: OPEN_DATA_LICENSE_NAME, url: OPEN_DATA_LICENSE_URL },
-      rawFilename: POPULATION_SOURCE_FILENAME,
-      rawBytes: POPULATION_SOURCE_BYTES,
-      rawSha256: POPULATION_SOURCE_SHA256,
-      usedColumns: ['區域別代碼', '村里', '戶數', '人口數'],
-    },
-  ],
-  files: { topology: topologyAsset, attributes: attributesAsset },
-};
-const manifestText = JSON.stringify(manifest);
-assert(!PRIVATE_USE.test(manifestText), 'Village manifest contains a Unicode private-use character');
-const manifestBuffer = Buffer.from(manifestText);
+    license: { name: OPEN_DATA_LICENSE_NAME, url: OPEN_DATA_LICENSE_URL },
+    sources: [
+      {
+        agency: '內政部國土測繪中心',
+        name: '村里界圖(TWD97經緯度)',
+        version: VILLAGE_SOURCE_VERSION,
+        sourceUrl: VILLAGE_SOURCE_URL,
+        downloadUrl: VILLAGE_SOURCE_DOWNLOAD_URL,
+        license: { name: OPEN_DATA_LICENSE_NAME, url: OPEN_DATA_LICENSE_URL },
+        rawFilename: VILLAGE_SOURCE_FILENAME,
+        rawBytes: VILLAGE_SOURCE_BYTES,
+        rawSha256: VILLAGE_SOURCE_SHA256,
+      },
+      {
+        agency: '內政部戶政司',
+        name: '村里戶數、單一年齡人口（新增區域代碼）',
+        version: POPULATION_SOURCE_VERSION,
+        sourceUrl: POPULATION_SOURCE_URL,
+        downloadUrl: POPULATION_SOURCE_DOWNLOAD_URL,
+        license: { name: OPEN_DATA_LICENSE_NAME, url: OPEN_DATA_LICENSE_URL },
+        rawFilename: POPULATION_SOURCE_FILENAME,
+        rawBytes: POPULATION_SOURCE_BYTES,
+        rawSha256: POPULATION_SOURCE_SHA256,
+        usedColumns: ['區域別代碼', '村里', '戶數', '人口數'],
+      },
+    ],
+    files: { topology: topologyAsset, attributes: attributesAsset },
+  };
+  const manifestText = JSON.stringify(manifest);
+  assert(!PRIVATE_USE.test(manifestText), 'Village manifest contains a Unicode private-use character');
+  const manifestBuffer = Buffer.from(manifestText);
 
-await mkdir(outputDir, { recursive: true });
-await writeFile(resolve(outputDir, TOPOLOGY_FILENAME), topologyBuffer);
-await writeFile(resolve(outputDir, ATTRIBUTE_FILENAME), attributesBuffer);
-await writeFile(resolve(outputDir, MANIFEST_FILENAME), manifestBuffer);
+  await mkdir(outputDir, { recursive: true });
+  await writeFile(resolve(outputDir, topologyFilename), topologyBuffer);
+  await writeFile(resolve(outputDir, attributeFilename), attributesBuffer);
+  await writeFile(resolve(outputDir, region.manifestFilename), manifestBuffer);
 
-process.stdout.write(
-  `Built ${villages.length} villages (${populationByCode.size} with population, ${unmatchedCodes.length} unmatched; ` +
-    `population ${populationTotal.toLocaleString()}).\n` +
-    `Topology: ${topologyAsset.bytes} bytes raw, ${topologyAsset.gzipBytes} gzip.\n` +
-    `Attributes: ${attributesAsset.bytes} bytes raw, ${attributesAsset.gzipBytes} gzip.\n` +
-    `Manifest: ${manifestBuffer.byteLength} bytes raw, ${gzipSync(manifestBuffer, { level: 9, mtime: 0 }).byteLength} gzip.\n`,
-);
+  process.stdout.write(
+    `Built ${villages.length} villages (${populationByCode.size} with population, ${unmatchedCodes.length} unmatched; ` +
+      `population ${populationTotal.toLocaleString()}).\n` +
+      `Topology: ${topologyAsset.bytes} bytes raw, ${topologyAsset.gzipBytes} gzip.\n` +
+      `Attributes: ${attributesAsset.bytes} bytes raw, ${attributesAsset.gzipBytes} gzip.\n` +
+      `Manifest: ${manifestBuffer.byteLength} bytes raw, ${gzipSync(manifestBuffer, { level: 9, mtime: 0 }).byteLength} gzip.\n`,
+  );
+}
