@@ -417,8 +417,8 @@ describe('transit worker protocol guards', () => {
       lines: [{
         ...transitSnapshot.lines[0]!,
         sectionFlow: {
-          ...transitSnapshot.lines[0]!.sectionFlow,
-          morningPeak: { ...transitSnapshot.lines[0]!.sectionFlow.morningPeak, forward: [] },
+          ...summary.lines[0]!.sectionFlow,
+          morningPeak: { ...summary.lines[0]!.sectionFlow.morningPeak, forward: [] },
         },
       }],
     })).toBe(false);
@@ -427,9 +427,9 @@ describe('transit worker protocol guards', () => {
       lines: [{
         ...transitSnapshot.lines[0]!,
         sectionFlow: {
-          ...transitSnapshot.lines[0]!.sectionFlow,
+          ...summary.lines[0]!.sectionFlow,
           eveningPeak: {
-            ...transitSnapshot.lines[0]!.sectionFlow.eveningPeak,
+            ...summary.lines[0]!.sectionFlow.eveningPeak,
             forward: [{ load: Number.NaN, capacity: 0, loadFactor: 0 }],
           },
         },
@@ -440,9 +440,9 @@ describe('transit worker protocol guards', () => {
       lines: [{
         ...transitSnapshot.lines[0]!,
         sectionFlow: {
-          ...transitSnapshot.lines[0]!.sectionFlow,
+          ...summary.lines[0]!.sectionFlow,
           offPeak: {
-            ...transitSnapshot.lines[0]!.sectionFlow.offPeak,
+            ...summary.lines[0]!.sectionFlow.offPeak,
             backward: [{ load: 0, capacity: -1, loadFactor: 0 }],
           },
         },

@@ -9,7 +9,7 @@ import {
 import { MAX_NAME_LENGTH } from '../city/limits';
 import type { FollowTrainInfo } from '../city/follow';
 import { SIMULATION_BALANCE, TRANSIT_MODES, type SimulationPeriodId } from '../city/modes';
-import type { TransitSummarySnapshot } from '../sim/transit';
+import type { TransitWireSummary } from '../sim/protocol';
 import type { LineFlowsData } from '../sim/transit/TransitSim';
 import type { RepresentativePassenger } from '../sim/transit/representative';
 import { createQualityPanel, type QualityPanelRenderer } from './quality-view';
@@ -79,7 +79,7 @@ export interface SimulationPanels {
   element: HTMLElement;
   update(
     network: Network,
-    snapshot: TransitSummarySnapshot | undefined,
+    snapshot: TransitWireSummary | undefined,
     selectedStationId?: string,
     getLineFlows?: (lineId: string) => LineFlowsData | undefined,
   ): void;
@@ -276,7 +276,7 @@ function updateLineCard(
   card: LineCard,
   line: Line,
   network: Network,
-  snapshot: TransitSummarySnapshot | undefined,
+  snapshot: TransitWireSummary | undefined,
   getLineFlows?: (lineId: string) => LineFlowsData | undefined,
 ): void {
   const modeDefinition = TRANSIT_MODES[line.mode];
@@ -307,8 +307,7 @@ function updateLineCard(
     ? totalOperatingCost
     : 0)}`;
   card.qualityPanel.update(lineStats?.quality ?? null, lineStats?.quality?.metrics ?? null);
-  // Older saved snapshots may lack section flow; the chart then shows its empty state.
-  const sectionFlow = sectionFlowFromSnapshot(getLineFlows?.(line.id)?.sectionFlow ?? lineStats?.sectionFlow);
+  const sectionFlow = sectionFlowFromSnapshot(getLineFlows?.(line.id)?.sectionFlow);
   const stationNames = line.stationIds.map((stationId) => network.stations.find(({ id }) => id === stationId)?.name ?? stationId);
   card.sectionFlowChart.update(sectionFlow, stationNames);
 }
@@ -388,7 +387,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const lineCards = new Map<string, LineCard>();
   const update = (
     network: Network,
-    snapshot: TransitSummarySnapshot | undefined,
+    snapshot: TransitWireSummary | undefined,
     selectedStationId?: string,
     getLineFlows?: (lineId: string) => LineFlowsData | undefined,
   ): void => {

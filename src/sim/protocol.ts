@@ -54,8 +54,14 @@ export interface TrainPosition {
   lat: number;
 }
 
+export type TransitLineSummary = Omit<TransitSummarySnapshot['lines'][number], 'sectionFlow' | 'stationFlows'>;
+
+export interface TransitWireSummary extends Omit<TransitSummarySnapshot, 'lines'> {
+  lines: TransitLineSummary[];
+}
+
 /** Transit summary plus the worker sequence, train positions, and recompute timing. */
-export interface TransitWorkerSnapshot extends TransitSummarySnapshot {
+export interface TransitWorkerSnapshot extends TransitWireSummary {
   seq: number;
   seed: number;
   trains: TrainPosition[];
