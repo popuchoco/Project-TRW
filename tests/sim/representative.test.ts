@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { buildTransitGraph, shortestStationPath } from '../../src/sim/transit/graph';
+import { buildRepresentativeTripPath } from '../../src/sim/transit/representative';
 import { TransitWorkerRuntime } from '../../src/sim/worker-runtime';
 import { selectRepresentativeTrip, tripLegs, type RepresentativeTripRoute } from '../../src/sim/transit/representative';
 
@@ -39,6 +41,7 @@ function route(odKey: string, flow: number, stationIds = ['s1', 's2']): Represen
         signature: `${odKey}-path`,
       },
       stationIds,
+      rideStationIds: [['s1', 's2']],
       walkInSeconds: 30,
       waitSeconds: [60],
       rideSeconds: [540],
@@ -71,6 +74,30 @@ describe('representative passenger selection', () => {
     expect(minutes).toBeCloseTo(selected!.doorToDoorMinutes, 10);
     expect(selected!.doorToDoorMinutes).toBe(12);
     expect(selected!.alternativeMinutes).toBe(20);
+  });
+
+  it('includes ordered stations for a multi-station ride leg', () => {
+    const threeStationNetwork = {
+      ...network,
+      stations: [
+        ...network.stations,
+        { id: 's3', name: '丙站', lon: 121.52, lat: 25 },
+      ],
+      lines: [{ ...network.lines[0]!, stationIds: ['s1', 's2', 's3'] }],
+      nextId: 5,
+    };
+    const graph = buildTransitGraph(threeStationNetwork);
+    const transitPath = shortestStationPath(graph, 'morningPeak', 's1', 's3');
+    expect(transitPath).not.toBeNull();
+
+    const path = buildRepresentativeTripPath(transitPath!, graph, 'morningPeak', 30, 90, 1_200);
+    const ride = tripLegs(path).find((leg) => leg.kind === 'ride');
+
+    expect(ride?.viaStationIds).toEqual(['s1', 's2', 's3']);
+    expect(ride?.viaStationIds?.[0]).toBe(ride?.fromStationId);
+    expect(ride?.viaStationIds?.at(-1)).toBe(ride?.toStationId);
+    expect(tripLegs(path).reduce((total, leg) => total + leg.minutes, 0))
+      .toBeCloseTo((30 + transitPath!.timeSeconds + 90) / 60, 10);
   });
 
   it('returns representative trip data on demand from the worker runtime', async () => {

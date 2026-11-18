@@ -419,10 +419,17 @@ export function isTransitWorkerSnapshot(value: unknown): value is TransitWorkerS
 function isPassengerLeg(value: unknown): boolean {
   if (!isRecord(value) || !['walkIn', 'wait', 'ride', 'transfer', 'walkOut'].some((kind) => kind === value.kind)
     || !isNonNegativeNumber(value.minutes)) return false;
-  return ['lineId', 'fromStationId', 'toStationId'].every((key) => {
+  const validStationFields = ['lineId', 'fromStationId', 'toStationId'].every((key) => {
     const field = value[key];
     return field === undefined || (typeof field === 'string' && field.length > 0 && field.length <= 200);
   });
+  if (!validStationFields) return false;
+  const viaStationIds = value.viaStationIds;
+  return viaStationIds === undefined || (value.kind === 'ride'
+    && Array.isArray(viaStationIds)
+    && viaStationIds.length >= 2 && viaStationIds.length <= 200
+    && viaStationIds.every((stationId: unknown) => typeof stationId === 'string'
+      && stationId.length > 0 && stationId.length <= MAX_ID_LENGTH));
 }
 
 function isRepresentativePassenger(value: unknown): value is RepresentativePassenger {

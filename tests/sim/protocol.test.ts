@@ -159,7 +159,7 @@ const representativePassenger = {
   legs: [
     { kind: 'walkIn', minutes: 0, toStationId: 's1' },
     { kind: 'wait', minutes: 2, lineId: 'l1', fromStationId: 's1', toStationId: 's1' },
-    { kind: 'ride', minutes: 3, lineId: 'l1', fromStationId: 's1', toStationId: 's2' },
+    { kind: 'ride', minutes: 3, lineId: 'l1', fromStationId: 's1', toStationId: 's2', viaStationIds: ['s1', 's2'] },
     { kind: 'walkOut', minutes: 0, fromStationId: 's2' },
   ],
   doorToDoorMinutes: 5,
@@ -252,6 +252,33 @@ describe('transit worker protocol guards', () => {
     ['worker-to-main union', isTransitWorkerToMainMessage, { type: 'unknown' }],
   ])('rejects a malformed %s message', (_name, guard, message) => {
     expect(guard(message)).toBe(false);
+  });
+
+  it('validates optional via station IDs only on ride legs', () => {
+    const withRide = (ride: unknown) => ({
+      ...representativePassenger,
+      legs: [...representativePassenger.legs.slice(0, 2), ride, representativePassenger.legs[3]],
+    });
+    const validRide = representativePassenger.legs[2]!;
+    const invalidPassengers = [
+      withRide({ ...validRide, viaStationIds: ['s1', 's2', 's3'.repeat(201)] }),
+      withRide({ ...validRide, viaStationIds: ['s1', 2] }),
+      withRide({ ...validRide, viaStationIds: ['s1'] }),
+      withRide({ ...validRide, viaStationIds: Array.from({ length: 201 }, () => 's1') }),
+      {
+        ...representativePassenger,
+        legs: [{ kind: 'walkIn', minutes: 0, toStationId: 's1', viaStationIds: ['s1', 's2'] }, ...representativePassenger.legs.slice(1)],
+      },
+    ];
+
+    expect(isTransitRepresentativePassengerResultMessage({
+      type: 'representativePassengerResult', requestId: 'representative-1', passenger: withRide(validRide),
+    })).toBe(true);
+    for (const passenger of invalidPassengers) {
+      expect(isTransitRepresentativePassengerResultMessage({
+        type: 'representativePassengerResult', requestId: 'representative-1', passenger,
+      })).toBe(false);
+    }
   });
 
   it('checks line-flow array lengths, ids, and numeric values in both directions', () => {

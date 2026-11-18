@@ -11,12 +11,14 @@ export interface RepresentativePassengerLeg {
   lineId?: string;
   fromStationId?: string;
   toStationId?: string;
+  viaStationIds?: string[];
 }
 
 /** Timing details attached to one equilibrium path for the requested period. */
 export interface RepresentativeTripPath {
   transitPath: TransitPath;
   stationIds: string[];
+  rideStationIds: string[][];
   walkInSeconds: number;
   waitSeconds: number[];
   rideSeconds: number[];
@@ -80,10 +82,12 @@ export function buildRepresentativeTripPath(
       return total + travelSeconds + mode.dwellSecondsPerStop;
     }, 0);
   });
+  const rideStationIds = transitPath.legs.map((leg) => representativeRideStationIds(leg, graph));
   const transferSeconds = transitPath.legs.slice(1).map(() => SIMULATION_BALANCE.transferPenaltySeconds);
   return {
     transitPath,
     stationIds,
+    rideStationIds,
     walkInSeconds,
     waitSeconds,
     rideSeconds,
@@ -91,6 +95,27 @@ export function buildRepresentativeTripPath(
     walkOutSeconds,
     alternativeSeconds,
   };
+}
+
+function representativeRideStationIds(
+  leg: TransitPath['legs'][number],
+  graph: TransitGraphRuntime,
+): string[] {
+  const line = graph.lineMetrics.get(leg.lineId)?.line;
+  if (!line) throw new RangeError(`Unknown line in representative path: ${leg.lineId}`);
+  const stationIds: string[] = [];
+  for (const segment of leg.segments) {
+    const fromIndex = segment.direction === 1 ? segment.segmentIndex : segment.segmentIndex + 1;
+    const toIndex = segment.direction === 1 ? segment.segmentIndex + 1 : segment.segmentIndex;
+    const fromStationId = line.stationIds[fromIndex];
+    const toStationId = line.stationIds[toIndex];
+    if (!fromStationId || !toStationId || (stationIds.length > 0 && stationIds[stationIds.length - 1] !== fromStationId)) {
+      throw new RangeError(`Invalid segment in representative path: ${leg.lineId}`);
+    }
+    if (stationIds.length === 0) stationIds.push(fromStationId);
+    stationIds.push(toStationId);
+  }
+  return stationIds;
 }
 
 /** Returns every station visited by the ordered ride segments, including transfer stops. */
@@ -129,6 +154,7 @@ export function tripLegs(path: RepresentativeTripPath): RepresentativePassengerL
       lineId: ride.lineId,
       fromStationId: ride.fromStationId,
       toStationId: ride.toStationId,
+      viaStationIds: path.rideStationIds[index],
     });
     if (index < path.transferSeconds.length) {
       legs.push({
