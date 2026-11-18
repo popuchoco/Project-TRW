@@ -1,4 +1,5 @@
 import { TAIPEI_CORE_TOWNCODES } from './metro-focus';
+import type { SavePayloadV2 } from '../save/types';
 
 export type RegionId = 'northNorth' | 'northNorthTaoyuan';
 
@@ -54,4 +55,14 @@ export function isRegionId(value: unknown): value is RegionId {
 
 export function regionIncludesCounty(region: RegionDefinition, countyCode: string): boolean {
   return region.countyCodes.includes(countyCode);
+}
+
+export function extendRegionPayload(payload: SavePayloadV2, to: RegionId): SavePayloadV2 {
+  if ((payload.region ?? DEFAULT_REGION_ID) !== 'northNorth' || to !== 'northNorthTaoyuan') {
+    throw new Error('僅允許從北北延伸到北北桃。');
+  }
+
+  const extended: SavePayloadV2 = { ...payload, region: to };
+  delete extended.transit;
+  return extended;
 }
