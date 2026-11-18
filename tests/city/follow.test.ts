@@ -53,13 +53,32 @@ describe('train following', () => {
 
 describe('representative passenger following', () => {
   const following: FollowState = { kind: 'followingPassenger', trip: passenger, startGameTime: 120_000 };
+  const ended: FollowState = { kind: 'passengerTripEnded', trip: passenger, startGameTime: 120_000 };
 
-  it('starts following and stops on drag, Escape, trip completion, or station deletion', () => {
+  it('keeps the trip after it ends and replays the same trip from the new game time', () => {
     expect(followReducer(idle, { type: 'startPassenger', trip: passenger, startGameTime: 120_000 })).toEqual(following);
+    expect(followReducer(following, { type: 'tripFinished' })).toEqual(ended);
+    expect(followReducer(ended, { type: 'replay', startGameTime: 300_000 }))
+      .toEqual({ kind: 'followingPassenger', trip: passenger, startGameTime: 300_000 });
+  });
+
+  it('clears an ended passenger trip on drag, Escape, close, or station deletion', () => {
     for (const event of [
       { type: 'drag' },
       { type: 'escape' },
-      { type: 'tripFinished' },
+      { type: 'close' },
+      { type: 'stationDeleted', stationId: 's3' },
+    ] as const) {
+      expect(followReducer(ended, event)).toEqual(idle);
+    }
+    expect(followReducer(ended, { type: 'stationDeleted', stationId: 'unrelated' })).toBe(ended);
+  });
+
+  it('clears an active passenger follow when dragged, escaped, closed, or a used station is deleted', () => {
+    for (const event of [
+      { type: 'drag' },
+      { type: 'escape' },
+      { type: 'close' },
       { type: 'stationDeleted', stationId: 's3' },
     ] as const) {
       expect(followReducer(following, event)).toEqual(idle);

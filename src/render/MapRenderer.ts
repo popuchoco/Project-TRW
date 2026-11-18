@@ -21,6 +21,7 @@ import { createEmptyNetwork, haversineKm, isTransferStation, type Network } from
 import { createStationCoordCache } from './station-coords';
 import {
   followCameraTarget,
+  PASSENGER_FOLLOW_TIME_SCALE,
   passengerPositionAt,
   type FollowState,
   type FollowTrainDisplay,
@@ -351,7 +352,7 @@ export class MapRenderer {
 
   get hasVisibleTrains(): boolean {
     if (!this.metroViewActive) return false;
-    // A followed passenger also needs frames while the simulation is running.
+    // An active passenger follow also needs frames while the simulation is running.
     if (this.followState.kind === 'followingPassenger') return true;
     return this.trainPositions.some((train) => {
       const point = this.camera.lonLatToScreen([train.lon, train.lat]);
@@ -460,7 +461,9 @@ export class MapRenderer {
       this.trainDirections.clear();
     }
     this.followState = state;
-    this.passengerMarker.visible = state.kind === 'followingPassenger' && this.metroViewActive;
+    this.passengerMarker.visible = (state.kind === 'followingPassenger' || state.kind === 'passengerTripEnded')
+      && this.metroViewActive;
+    this.positionPassengerMarker();
   }
 
   setFollowHandlers(handlers?: FollowHandlers): void {
@@ -498,7 +501,13 @@ export class MapRenderer {
   }
 
   getFollowPassengerTrip(): RepresentativePassenger | undefined {
-    return this.followState.kind === 'followingPassenger' ? this.followState.trip : undefined;
+    return this.followState.kind === 'followingPassenger' || this.followState.kind === 'passengerTripEnded'
+      ? this.followState.trip
+      : undefined;
+  }
+
+  isPassengerTripEnded(): boolean {
+    return this.followState.kind === 'passengerTripEnded';
   }
 
   setEditorPointerHandler(handler?: NetworkEditorPointerHandler): void {
@@ -945,7 +954,8 @@ export class MapRenderer {
   }
 
   private positionPassengerMarker(): void {
-    const following = this.followState.kind === 'followingPassenger' && this.metroViewActive;
+    const following = (this.followState.kind === 'followingPassenger'
+      || this.followState.kind === 'passengerTripEnded') && this.metroViewActive;
     this.passengerMarker.visible = following && this.passengerPosition !== undefined;
     if (!following || !this.passengerPosition) return;
     const position = this.camera.lonLatToScreen(this.passengerPosition);
@@ -954,22 +964,34 @@ export class MapRenderer {
 
   private updatePassengerFollowFrame(): void {
     const following = this.followState;
-    if (following.kind !== 'followingPassenger' || !this.metroViewActive || this.currentGameTimeMs === undefined) {
+    if ((following.kind !== 'followingPassenger' && following.kind !== 'passengerTripEnded') || !this.metroViewActive) {
       this.passengerMarker.visible = false;
       return;
     }
-    const elapsedGameMinutes = (this.currentGameTimeMs - following.startGameTime) / 60_000;
+    const elapsedGameMinutes = following.kind === 'passengerTripEnded'
+      ? following.trip.doorToDoorMinutes
+      : this.currentGameTimeMs === undefined
+        ? undefined
+        : (this.currentGameTimeMs - following.startGameTime) / 60_000 * PASSENGER_FOLLOW_TIME_SCALE;
+    if (elapsedGameMinutes === undefined) {
+      this.passengerMarker.visible = false;
+      return;
+    }
     const position = passengerPositionAt(following.trip, this.stationCoords, elapsedGameMinutes);
     if (position) {
       this.passengerPosition = [position.lon, position.lat];
       this.positionPassengerMarker();
-      const center = project([position.lon, position.lat]);
-      if (center.x !== this.camera.center.x || center.y !== this.camera.center.y) {
-        this.camera.center = center;
-        this.updateCameraDisplay();
+      if (following.kind === 'followingPassenger') {
+        const center = project([position.lon, position.lat]);
+        if (center.x !== this.camera.center.x || center.y !== this.camera.center.y) {
+          this.camera.center = center;
+          this.updateCameraDisplay();
+        }
       }
     }
-    if (elapsedGameMinutes >= following.trip.doorToDoorMinutes) this.followHandlers?.tripFinished();
+    if (following.kind === 'followingPassenger' && elapsedGameMinutes >= following.trip.doorToDoorMinutes) {
+      this.followHandlers?.tripFinished();
+    }
   }
 
   private refreshVisibility(): void {

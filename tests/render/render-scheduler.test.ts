@@ -149,7 +149,7 @@ describe('RenderScheduler', () => {
     expect(driver.pendingCount()).toBe(0);
   });
 
-  it('does not render over five simulated seconds while paused with a representative passenger followed', () => {
+  it('keeps a finished representative passenger trip while paused without rendering for five seconds', () => {
     const driver = createFrameDriver();
     let renderCount = 0;
     const scheduler = new RenderScheduler({
@@ -172,12 +172,13 @@ describe('RenderScheduler', () => {
       },
       startGameTime: 0,
     });
-    // MapRenderer reports visible activity while a passenger is followed; paused must still win.
-    scheduler.setSimulationActivity(false, true);
+    const ended: FollowState = followReducer(following, { type: 'tripFinished' });
+    // An ended passenger remains available to the panel but no longer requests animation frames.
+    scheduler.setSimulationActivity(false, ended.kind === 'followingPassenger');
 
     for (let timestamp = 0; timestamp <= 5_000; timestamp += 100) driver.frame(timestamp);
 
-    expect(following.kind).toBe('followingPassenger');
+    expect(ended.kind).toBe('passengerTripEnded');
     expect(renderCount).toBe(0);
     expect(scheduler.renderCount).toBe(0);
     expect(driver.pendingCount()).toBe(0);

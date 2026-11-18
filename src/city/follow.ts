@@ -4,17 +4,23 @@ import type { RepresentativePassenger } from '../sim/transit/representative';
 export type FollowState =
   | { kind: 'idle' }
   | { kind: 'followingTrain'; trainId: string; lineId: string }
-  | { kind: 'followingPassenger'; trip: RepresentativePassenger; startGameTime: number };
+  | { kind: 'followingPassenger'; trip: RepresentativePassenger; startGameTime: number }
+  | { kind: 'passengerTripEnded'; trip: RepresentativePassenger; startGameTime: number };
 
 export type FollowEvent =
   | { type: 'start'; trainId: string; lineId: string }
   | { type: 'startPassenger'; trip: RepresentativePassenger; startGameTime: number }
+  | { type: 'replay'; startGameTime: number }
+  | { type: 'close' }
   | { type: 'drag' }
   | { type: 'escape' }
   | { type: 'trainGone'; trainId: string }
   | { type: 'lineDeleted'; lineId: string }
   | { type: 'stationDeleted'; stationId: string }
   | { type: 'tripFinished' };
+
+/** 節奏由小鑫決定，數值不要改。 */
+export const PASSENGER_FOLLOW_TIME_SCALE = 1;
 
 export interface FollowTrainDisplay {
   lineId: string;
@@ -40,13 +46,21 @@ export function followReducer(state: FollowState, event: FollowEvent): FollowSta
     return { kind: 'followingPassenger', trip: event.trip, startGameTime: event.startGameTime };
   }
   if (state.kind === 'idle') return state;
-  if (event.type === 'drag' || event.type === 'escape') return IDLE;
+  if (event.type === 'drag' || event.type === 'escape' || event.type === 'close') return IDLE;
   if (state.kind === 'followingTrain') {
     if (event.type === 'trainGone' && event.trainId === state.trainId) return IDLE;
     if (event.type === 'lineDeleted' && event.lineId === state.lineId) return IDLE;
   }
   if (state.kind === 'followingPassenger') {
-    if (event.type === 'tripFinished') return IDLE;
+    if (event.type === 'tripFinished') {
+      return { kind: 'passengerTripEnded', trip: state.trip, startGameTime: state.startGameTime };
+    }
+    if (event.type === 'stationDeleted' && passengerTripUsesStation(state.trip, event.stationId)) return IDLE;
+  }
+  if (state.kind === 'passengerTripEnded') {
+    if (event.type === 'replay') {
+      return { kind: 'followingPassenger', trip: state.trip, startGameTime: event.startGameTime };
+    }
     if (event.type === 'stationDeleted' && passengerTripUsesStation(state.trip, event.stationId)) return IDLE;
   }
   return state;
