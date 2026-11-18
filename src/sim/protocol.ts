@@ -334,9 +334,21 @@ function isStationFlows(value: unknown, stationCount: number): boolean {
 
 function isTransitSummary(
   value: unknown,
+  allowMissingQuality: boolean,
+  allowMissingSectionFlow: boolean,
+  forbidSectionFlow: true,
+): value is TransitWireSummary;
+function isTransitSummary(
+  value: unknown,
+  allowMissingQuality?: boolean,
+  allowMissingSectionFlow?: boolean,
+): value is TransitSummarySnapshot;
+function isTransitSummary(
+  value: unknown,
   allowMissingQuality = false,
   allowMissingSectionFlow = false,
-): value is TransitSummarySnapshot {
+  forbidSectionFlow = false,
+): value is TransitSummarySnapshot | TransitWireSummary {
   if (!isRecord(value) || !isNonNegativeNumber(value.gameTimeMs)
     || !isNonNegativeInteger(value.gameDay) || !isPeriodId(value.currentPeriodId)
     || !isNonNegativeInteger(value.pathRecomputeCount) || !isNonNegativeInteger(value.demandPairCount)
@@ -369,9 +381,11 @@ function isTransitSummary(
       || !isNonNegativeInteger(line.cars) || !isNonNegativeInteger(line.peakTrains)
       || !isNonNegativeInteger(line.offPeakTrains)
       || !isQualityOrMissingLegacy(line.quality, allowMissingQuality)
-      || !((allowMissingSectionFlow && line.sectionFlow === undefined && line.stationFlows === undefined)
-        || (isSectionFlow(line.sectionFlow, line.stationCount)
-          && isStationFlows(line.stationFlows, line.stationCount)))
+      || !(forbidSectionFlow
+        ? line.sectionFlow === undefined && line.stationFlows === undefined
+        : (allowMissingSectionFlow && line.sectionFlow === undefined && line.stationFlows === undefined)
+          || (isSectionFlow(line.sectionFlow, line.stationCount)
+            && isStationFlows(line.stationFlows, line.stationCount)))
       || !Array.isArray(line.periods) || line.periods.length !== 4
       || !line.periods.every((period: unknown) => isRecord(period)
         && isPeriodId(period.periodId) && typeof period.periodName === 'string'
@@ -414,7 +428,7 @@ export function isTransitWorkerSnapshot(value: unknown): value is TransitWorkerS
     || !Array.isArray(value.trains) || value.trains.length > 300
     || !isNonNegativeNumber(value.recomputeMs)) return false;
   const trains = value.trains;
-  if (!isTransitSummary(value, false, true)) return false;
+  if (!isTransitSummary(value, false, false, true)) return false;
   return trains.every((train: unknown) => isRecord(train)
     && typeof train.id === 'string' && train.id.length > 0
     && typeof train.lineId === 'string' && train.lineId.length > 0
