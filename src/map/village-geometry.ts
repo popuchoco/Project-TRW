@@ -172,3 +172,68 @@ export function decodeVillageGeometry(
     villages,
   };
 }
+
+/** Merge VILLCODE-ordered geometry parts while preserving each part's ring data. */
+export function mergeVillageGeometry(parts: readonly VillageGeometryData[]): VillageGeometryData {
+  if (parts.length === 0) throw new Error('At least one village geometry part is required.');
+  if (parts.length === 1) return parts[0]!;
+
+  const first = parts[0]!;
+  let coordinateOffset = 0;
+  let villageOffset = 0;
+  let polygonOffset = 0;
+  let coordinateLength = 0;
+  const ringOffsets: number[] = [0];
+  const ringVillageIndices: number[] = [];
+  const ringPolygonIndices: number[] = [];
+  const ringIsHole: number[] = [];
+  const villages: VillageGeometryRecord[] = [];
+
+  for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+    const part = parts[partIndex]!;
+    if (part.header.version !== first.header.version || part.header.projection !== first.header.projection) {
+      throw new Error('Village geometry headers do not match.');
+    }
+    if (part.villages.length === 0) throw new Error('Village geometry parts must contain villages.');
+    if (partIndex > 0) {
+      const previous = parts[partIndex - 1]!.villages;
+      const previousCode = previous[previous.length - 1]!.VILLCODE;
+      const nextCode = part.villages[0]!.VILLCODE;
+      if (compareCode(previousCode, nextCode) >= 0) {
+        throw new Error(`Village geometry parts are not strictly ordered: ${previousCode} and ${nextCode}.`);
+      }
+    }
+
+    for (let index = 1; index < part.ringOffsets.length; index += 1) {
+      ringOffsets.push(part.ringOffsets[index]! + coordinateOffset);
+    }
+    for (const index of part.ringVillageIndices) ringVillageIndices.push(index + villageOffset);
+    for (const index of part.ringPolygonIndices) ringPolygonIndices.push(index + polygonOffset);
+    for (const isHole of part.ringIsHole) ringIsHole.push(isHole);
+    for (const village of part.villages) villages.push(village);
+
+    coordinateOffset += part.coords.length / 2;
+    villageOffset += part.villages.length;
+    let partPolygonCount = 0;
+    for (const index of part.ringPolygonIndices) partPolygonCount = Math.max(partPolygonCount, index + 1);
+    polygonOffset += partPolygonCount;
+    coordinateLength += part.coords.length;
+  }
+
+  const coords = new Float32Array(coordinateLength);
+  let coordinatePosition = 0;
+  for (const part of parts) {
+    coords.set(part.coords, coordinatePosition);
+    coordinatePosition += part.coords.length;
+  }
+
+  return {
+    header: { ...first.header },
+    coords,
+    ringOffsets: new Uint32Array(ringOffsets),
+    ringVillageIndices: new Uint32Array(ringVillageIndices),
+    ringPolygonIndices: new Uint32Array(ringPolygonIndices),
+    ringIsHole: new Uint8Array(ringIsHole),
+    villages,
+  };
+}

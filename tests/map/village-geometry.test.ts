@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { project } from '../../src/map/projection';
 import {
   decodeVillageGeometry,
+  mergeVillageGeometry,
   multiPolygonAreaKm2,
   VILLAGE_GEOMETRY_VERSION,
   VILLAGE_PROJECTION_VERSION,
@@ -52,6 +53,19 @@ function attribute(VILLCODE: string): VillageGeometryAttribute {
     households: 40,
     populationMatched: true,
     demandPoint: [121.5, 25.1],
+  };
+}
+
+function singleVillageTopology(VILLCODE: string): Topology {
+  return {
+    type: 'Topology',
+    arcs: [square],
+    objects: {
+      'north-north-simplified': {
+        type: 'GeometryCollection',
+        geometries: [{ type: 'Polygon', arcs: [[0]], properties: { VILLCODE } }],
+      },
+    },
   };
 }
 
@@ -113,5 +127,66 @@ describe('decodeVillageGeometry', () => {
     expect(lookup.find(121.1, 25.1)?.VILLCODE).toBe('B');
     expect(lookup.find(121.3, 25.3)).toBeUndefined();
     expect(lookup.find(124, 25)).toBeUndefined();
+  });
+});
+
+describe('mergeVillageGeometry', () => {
+  it('merges ordered decoded parts with the same villages, rings, and shifted indices as one decode', () => {
+    const first = decodeVillageGeometry({
+      type: 'Topology',
+      arcs: [square, hole],
+      objects: {
+        'north-north-simplified': {
+          type: 'GeometryCollection',
+          geometries: [{ type: 'Polygon', arcs: [[0], [1]], properties: { VILLCODE: 'A' } }],
+        },
+      },
+    }, [attribute('A')]);
+    const second = decodeVillageGeometry({
+      type: 'Topology',
+      arcs: [island, square],
+      objects: {
+        'north-north-simplified': {
+          type: 'GeometryCollection',
+          geometries: [{ type: 'MultiPolygon', arcs: [[[0]], [[1]]], properties: { VILLCODE: 'B' } }],
+        },
+      },
+    }, [attribute('B')]);
+    const combined = decodeVillageGeometry({
+      type: 'Topology',
+      arcs: [square, hole, island, square],
+      objects: {
+        'north-north-simplified': {
+          type: 'GeometryCollection',
+          geometries: [
+            { type: 'Polygon', arcs: [[0], [1]], properties: { VILLCODE: 'A' } },
+            { type: 'MultiPolygon', arcs: [[[2]], [[3]]], properties: { VILLCODE: 'B' } },
+          ],
+        },
+      },
+    }, [attribute('B'), attribute('A')]);
+    const merged = mergeVillageGeometry([first, second]);
+
+    expect(merged.villages).toEqual(combined.villages);
+    expect(merged.ringIsHole).toHaveLength(combined.ringIsHole.length);
+    expect(Array.from(merged.ringOffsets)).toEqual(Array.from(combined.ringOffsets));
+    expect(Array.from(merged.ringVillageIndices)).toEqual([0, 0, 1, 1]);
+    expect(Array.from(merged.ringPolygonIndices)).toEqual([0, 0, 1, 2]);
+    expect(Array.from(merged.ringIsHole)).toEqual([0, 1, 0, 0]);
+    expect(Array.from(merged.coords)).toEqual(Array.from(combined.coords));
+  });
+
+  it('returns the same object for a single part', () => {
+    const part = decodeVillageGeometry(singleVillageTopology('A'), [attribute('A')]);
+
+    expect(mergeVillageGeometry([part])).toBe(part);
+  });
+
+  it('throws for overlapping or out-of-order village codes', () => {
+    const a = decodeVillageGeometry(singleVillageTopology('A'), [attribute('A')]);
+    const b = decodeVillageGeometry(singleVillageTopology('B'), [attribute('B')]);
+
+    expect(() => mergeVillageGeometry([a, a])).toThrow();
+    expect(() => mergeVillageGeometry([b, a])).toThrow();
   });
 });
