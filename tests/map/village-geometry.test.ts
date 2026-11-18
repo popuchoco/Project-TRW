@@ -190,3 +190,30 @@ describe('mergeVillageGeometry', () => {
     expect(() => mergeVillageGeometry([b, a])).toThrow();
   });
 });
+
+describe('real 北北桃 village files (review H-2)', () => {
+  it('decodes the 桃園 topology object and merges it after 北北', async () => {
+    const { readFileSync } = await import('node:fs');
+    const read = <T>(file: string): T => JSON.parse(
+      readFileSync(new URL(`../../public/data/${file}`, import.meta.url), 'utf8'),
+    ) as T;
+    const northNorth = decodeVillageGeometry(
+      read<Topology>('villages-6300065000.topo.json'),
+      read<VillageGeometryAttribute[]>('villages-6300065000.json'),
+    );
+    const taoyuan = decodeVillageGeometry(
+      read<Topology>('villages-68000.topo.json'),
+      read<VillageGeometryAttribute[]>('villages-68000.json'),
+    );
+    expect(northNorth.villages).toHaveLength(1_512);
+    expect(taoyuan.villages).toHaveLength(529);
+    expect(taoyuan.villages.every(({ VILLCODE }) => VILLCODE.startsWith('68000'))).toBe(true);
+    const merged = mergeVillageGeometry([northNorth, taoyuan]);
+    expect(merged.villages).toHaveLength(2_041);
+    expect(merged.ringOffsets.length).toBe(northNorth.ringOffsets.length + taoyuan.ringOffsets.length - 1);
+    expect(merged.ringOffsets[merged.ringOffsets.length - 1]).toBe(merged.coords.length / 2);
+    const lookup = new VillageGeometryLookup(merged);
+    const zhongli = taoyuan.villages.find(({ TOWNCODE }) => TOWNCODE === '68000020')!;
+    expect(lookup.find(zhongli.demandPoint[0], zhongli.demandPoint[1])?.VILLCODE.startsWith('68000')).toBe(true);
+  });
+});

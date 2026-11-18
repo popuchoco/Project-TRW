@@ -94,12 +94,18 @@ export function multiPolygonAreaKm2(polygons: PolygonCoordinates): number {
   return Math.max(0, area);
 }
 
+/** 北北 keeps its historical object name; a single-object file (e.g. 桃園 `taoyuan-simplified`) uses that object. */
+function villageObjectName(topology: Topology): string {
+  const names = Object.keys(topology.objects ?? {});
+  return names.length === 1 ? names[0]! : 'north-north-simplified';
+}
+
 /** Decode village TopoJSON and encode projected rings with attribute indices. */
 export function decodeVillageGeometry(
   topology: Topology,
   sourceAttributes: readonly VillageGeometryAttribute[],
 ): VillageGeometryData {
-  const features = decodeTopology(topology, 'north-north-simplified') as unknown as VillageTopologyFeature[];
+  const features = decodeTopology(topology, villageObjectName(topology)) as unknown as VillageTopologyFeature[];
   const sourceVillages = sourceAttributes.map(copyAndValidateAttribute).sort((a, b) => compareCode(a.VILLCODE, b.VILLCODE));
   for (let index = 1; index < sourceVillages.length; index += 1) {
     if (sourceVillages[index - 1]!.VILLCODE === sourceVillages[index]!.VILLCODE) {
