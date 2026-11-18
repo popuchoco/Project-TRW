@@ -55,6 +55,19 @@ describe("save records", () => {
     await expect(loadSave(storage)).resolves.toEqual(written);
   });
 
+  it("accepts legacy payloads without a region and both supported region values", () => {
+    const record = (payload: Record<string, unknown>) => ({ schemaVersion: 2, savedAt: 100, payload });
+    const legacyPayload = validPayload();
+    expect(() => validateSaveRecord(record(legacyPayload))).not.toThrow();
+
+    for (const region of ["northNorth", "northNorthTaoyuan"] as const) {
+      expect(() => validateSaveRecord(record({ ...validPayload(), region }))).not.toThrow();
+    }
+
+    expect(() => validateSaveRecord(record({ ...validPayload(), region: "unknown" })))
+      .toThrow("存檔格式錯誤：payload.region 不是有效的都會範圍。");
+  });
+
   it("migrates v1 saves to an empty v2 network and carries the camera", async () => {
     const storage = new MemorySaveStorage();
     storage.value = {
@@ -123,6 +136,7 @@ describe("save records", () => {
     const storage = new MemorySaveStorage();
     const payload = validPayload();
     const providers: SaveStateProviders = {
+      getRegion: () => "northNorthTaoyuan",
       getNetwork: () => payload.network,
       getCamera: () => payload.camera,
       getView: () => payload.view,
@@ -130,6 +144,7 @@ describe("save records", () => {
       getStats: () => payload.stats,
     };
     const current = collectSavePayload(providers);
+    expect(current.region).toBe("northNorthTaoyuan");
     const saved = await saveCurrentState(storage, providers, 5678);
     const exported = importSaveJson(serializeSave(saved));
     expect(saved.payload).toEqual(current);
@@ -141,6 +156,7 @@ describe("save records", () => {
     const storage = new MemorySaveStorage();
     const payload = validPayload();
     const providers: SaveStateProviders = {
+      getRegion: () => "northNorth",
       getNetwork: () => payload.network,
       getCamera: () => payload.camera,
       getView: () => "metro",

@@ -6,7 +6,7 @@ import type { VillageGeometryRecord } from './map/village-geometry';
 import { MapRenderer } from './render/MapRenderer';
 import { RenderScheduler } from './render/RenderScheduler';
 import { IndexedDbSaveStorage } from './save/storage';
-import { loadSave } from './save/save';
+import { loadSave, savePayload } from './save/save';
 import { requestPersistentStorage } from './save/persistence';
 import type { SavePayloadV2 } from './save/types';
 import { registerServiceWorker } from './sw/register';
@@ -22,6 +22,7 @@ import {
 import { createCityController, type CityController } from './city/controller';
 import { History } from './city/history';
 import { createEmptyNetwork, type Network } from './city/network';
+import { DEFAULT_REGION_ID, extendRegionPayload, REGIONS } from './city/regions';
 import { type TransitModeId } from './city/modes';
 import type { SimSpeed } from './sim/clock';
 import type { TransitWorkerSnapshot } from './sim/protocol';
@@ -150,6 +151,10 @@ async function startApp(): Promise<void> {
   } catch (error) {
     console.info('Saved game could not be loaded; starting with a fresh session.', error);
   }
+  const region = REGIONS[restoredPayload?.region ?? DEFAULT_REGION_ID];
+  ui.enterMetroButton.textContent = `${region.name}都會`;
+  ui.extendRegionButton.hidden = region.id !== 'northNorth';
+  const villageLoadingStatus = `載入${region.name}村里資料中…`;
   if (restoredPayload) selectedSimSpeed = restoredPayload.simulation.speed;
   const networkHistory = new History(restoredPayload?.network ?? createEmptyNetwork());
   const rendererState: { current?: MapRenderer } = {};
@@ -165,6 +170,7 @@ async function startApp(): Promise<void> {
     networkHistory,
     rendererState,
     getMapRenderer: () => mapRenderer,
+    getRegion: () => region.id,
     restoredPayload,
     freshSimulation,
     saveStorage,
@@ -175,6 +181,40 @@ async function startApp(): Promise<void> {
     getSelectedNetworkItem: () => cityControllerRef.current?.getSelectedNetworkItem(),
     showStatus,
     updateRenderActivity: (running, hasVisibleTrains) => renderScheduler?.setSimulationActivity(running, hasVisibleTrains),
+  });
+  let regionExtensionConfirmationTimer: number | undefined;
+  ui.extendRegionButton.addEventListener('click', () => {
+    const button = ui.extendRegionButton;
+    if (regionExtensionConfirmationTimer === undefined) {
+      button.textContent = '確定延伸？乘客習慣會重新累積';
+      regionExtensionConfirmationTimer = window.setTimeout(() => {
+        regionExtensionConfirmationTimer = undefined;
+        button.textContent = '延伸到桃園';
+      }, 5000);
+      return;
+    }
+
+    window.clearTimeout(regionExtensionConfirmationTimer);
+    regionExtensionConfirmationTimer = undefined;
+    button.disabled = true;
+    void (async () => {
+      try {
+        await panelController.saveLiveState();
+        const savedRecord = await loadSave(saveStorage);
+        if (!savedRecord) throw new Error('找不到存檔。');
+        const extendedPayload = extendRegionPayload(
+          savedRecord.payload as SavePayloadV2,
+          'northNorthTaoyuan',
+        );
+        await savePayload(saveStorage, extendedPayload);
+        window.location.reload();
+      } catch (error) {
+        console.error('延伸到桃園失敗。', error);
+        showStatus('延伸到桃園失敗，請稍後再試。');
+        button.textContent = '延伸到桃園';
+        button.disabled = false;
+      }
+    })();
   });
   const cityController = createCityController({
     ui,
@@ -262,14 +302,15 @@ async function startApp(): Promise<void> {
   let hasVillageGeometry = false;
   const ensureVillageGeometry = (): void => {
     if (villageGeometryPromise) return;
-    ui.status.textContent = '載入北北村里資料中…';
+    ui.status.textContent = villageLoadingStatus;
     ui.status.hidden = false;
     villageGeometryClient ??= new VillageGeometryClient();
     const dataBase = new URL(import.meta.env.BASE_URL, document.baseURI);
-    villageGeometryPromise = villageGeometryClient.load(
-      new URL('data/villages-6300065000.topo.json', dataBase).href,
-      new URL('data/villages-6300065000.json', dataBase).href,
-    ).then((geometry) => {
+    const parts = region.villageAssets.map((asset) => ({
+      topologyUrl: new URL(asset.topology, dataBase).href,
+      attributesUrl: new URL(asset.attributes, dataBase).href,
+    }));
+    villageGeometryPromise = villageGeometryClient.loadParts(parts).then((geometry) => {
       const breaks = rendererState.current?.setVillageGeometry(geometry);
       if (breaks) renderDensityLegend(ui.densityLegend, breaks);
       hasVillageGeometry = true;
@@ -278,8 +319,8 @@ async function startApp(): Promise<void> {
       cityController.updateEditorControls();
       ui.status.hidden = true;
     }).catch((error: unknown) => {
-      console.error('Unable to load North–North village geometry', error);
-      ui.status.textContent = '北北村里資料載入失敗，請返回全島後再試。';
+      console.error(`Unable to load ${region.name} village geometry`, error);
+      ui.status.textContent = `${region.name}村里資料載入失敗，請返回全島後再試。`;
       ui.status.hidden = false;
       ui.editorToolbar.hidden = true;
       villageGeometryPromise = undefined;
@@ -384,10 +425,11 @@ async function startApp(): Promise<void> {
       ui.editorToolbar.hidden = !active || !hasVillageGeometry;
       panelController.setMetroViewActive(active);
       if (active) ensureVillageGeometry();
-      else if (ui.status.textContent === '載入北北村里資料中…') ui.status.hidden = true;
+      else if (ui.status.textContent === villageLoadingStatus) ui.status.hidden = true;
     },
     () => renderScheduler?.invalidate(),
   );
+  createdRenderer.setRegion(region);
   rendererState.current = createdRenderer;
   mapRenderer = createdRenderer;
   const stationCommandAt = cityController.attachRenderer(createdRenderer, () => hasVillageGeometry, restoredPayload);

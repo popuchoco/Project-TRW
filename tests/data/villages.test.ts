@@ -60,6 +60,18 @@ const features = decodeTopology(topology, manifest.files.topology.objectName);
 const geometryByCode = new Map(
   features.map(({ properties, geometry }) => [String((properties as Record<string, unknown>).VILLCODE), geometry]),
 );
+const taoyuanManifest = JSON.parse(
+  readFileSync(resolve(dataDir, 'villages-68000-manifest.json'), 'utf8'),
+) as VillageManifest;
+const taoyuanAttributes = JSON.parse(
+  readFileSync(resolve(dataDir, taoyuanManifest.files.attributes.path), 'utf8'),
+) as VillageAttribute[];
+const taoyuanTopologyText = readFileSync(resolve(dataDir, taoyuanManifest.files.topology.path), 'utf8');
+const taoyuanTopology = JSON.parse(taoyuanTopologyText) as Topology;
+const taoyuanFeatures = decodeTopology(taoyuanTopology, taoyuanManifest.files.topology.objectName);
+const taoyuanGeometryByCode = new Map(
+  taoyuanFeatures.map(({ properties, geometry }) => [String((properties as Record<string, unknown>).VILLCODE), geometry]),
+);
 const PRIVATE_USE = /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
 
 describe('generated Taipei/New Taipei village data', () => {
@@ -174,5 +186,64 @@ describe('generated Taipei/New Taipei village data', () => {
       }
     }
     expect([...arcReferences.values()].some((codes) => codes.size > 1)).toBe(true);
+  });
+});
+
+describe('generated Taoyuan village data', () => {
+  it('contains the expected villages, population rows and population total', () => {
+    expect(taoyuanAttributes).toHaveLength(529);
+    expect(new Set(taoyuanAttributes.map(({ VILLCODE }) => VILLCODE)).size).toBe(529);
+    expect(taoyuanAttributes.filter(({ populationMatched }) => populationMatched)).toHaveLength(529);
+    expect(taoyuanAttributes.filter(({ populationMatched }) => !populationMatched)).toHaveLength(0);
+    expect(taoyuanManifest.villageCount).toBe(529);
+    expect(taoyuanManifest.populationMatchedCount).toBe(529);
+    expect(taoyuanManifest.unmatchedCount).toBe(0);
+    expect(taoyuanAttributes.reduce((total, { population }) => total + population, 0)).toBe(2_358_720);
+    expect(taoyuanManifest.populationTotal).toBe(2_358_720);
+  });
+
+  it('has sorted 68000 VILLCODEs and exactly the 13 Taoyuan TOWNCODEs', () => {
+    const villageCodes = taoyuanAttributes.map(({ VILLCODE }) => VILLCODE);
+    expect(villageCodes).toEqual([...villageCodes].sort());
+    expect(villageCodes.every((code) => code.startsWith('68000'))).toBe(true);
+
+    const townCodes = taoyuanAttributes.map(({ TOWNCODE }) => TOWNCODE)
+      .filter((code, index, codes) => codes.indexOf(code) === index)
+      .sort();
+    const expectedTownCodes = townManifest.towns
+      .filter(({ countyCode }) => countyCode === '68000')
+      .map(({ code }) => code)
+      .sort();
+    expect(townCodes).toHaveLength(13);
+    expect(taoyuanManifest.townCodeCount).toBe(13);
+    expect(townCodes).toEqual(expectedTownCodes);
+    expect(taoyuanManifest.townCodes).toEqual(expectedTownCodes);
+  });
+
+  it('keeps every demand point inside its decoded village polygon', () => {
+    expect(taoyuanGeometryByCode.size).toBe(529);
+    for (const village of taoyuanAttributes) {
+      const geometry = taoyuanGeometryByCode.get(village.VILLCODE) as MultiPolygonGeometry | undefined;
+      expect(geometry, village.VILLCODE).toBeDefined();
+      expect(
+        pointInMultiPolygon(geometry!.coordinates, village.demandPoint[0], village.demandPoint[1]),
+        village.VILLCODE,
+      ).toBe(true);
+    }
+  });
+
+  it('contains no private-use characters and records matching asset bytes and hashes', () => {
+    const manifestText = readFileSync(resolve(dataDir, 'villages-68000-manifest.json'), 'utf8');
+    expect(PRIVATE_USE.test(JSON.stringify(taoyuanAttributes))).toBe(false);
+    expect(PRIVATE_USE.test(taoyuanTopologyText)).toBe(false);
+    expect(PRIVATE_USE.test(manifestText)).toBe(false);
+    expect(taoyuanManifest.dataVersion).toBe('1150817+11510');
+
+    for (const asset of [taoyuanManifest.files.topology, taoyuanManifest.files.attributes]) {
+      const bytes = readFileSync(resolve(dataDir, asset.path));
+      expect(bytes.byteLength).toBe(asset.bytes);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(asset.sha256);
+      expect(gzipSync(bytes, { level: 9 }).byteLength).toBe(asset.gzipBytes);
+    }
   });
 });

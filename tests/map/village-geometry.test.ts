@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { project } from '../../src/map/projection';
 import {
   decodeVillageGeometry,
+  mergeVillageGeometry,
   multiPolygonAreaKm2,
   VILLAGE_GEOMETRY_VERSION,
   VILLAGE_PROJECTION_VERSION,
@@ -52,6 +53,19 @@ function attribute(VILLCODE: string): VillageGeometryAttribute {
     households: 40,
     populationMatched: true,
     demandPoint: [121.5, 25.1],
+  };
+}
+
+function singleVillageTopology(VILLCODE: string): Topology {
+  return {
+    type: 'Topology',
+    arcs: [square],
+    objects: {
+      'north-north-simplified': {
+        type: 'GeometryCollection',
+        geometries: [{ type: 'Polygon', arcs: [[0]], properties: { VILLCODE } }],
+      },
+    },
   };
 }
 
@@ -113,5 +127,93 @@ describe('decodeVillageGeometry', () => {
     expect(lookup.find(121.1, 25.1)?.VILLCODE).toBe('B');
     expect(lookup.find(121.3, 25.3)).toBeUndefined();
     expect(lookup.find(124, 25)).toBeUndefined();
+  });
+});
+
+describe('mergeVillageGeometry', () => {
+  it('merges ordered decoded parts with the same villages, rings, and shifted indices as one decode', () => {
+    const first = decodeVillageGeometry({
+      type: 'Topology',
+      arcs: [square, hole],
+      objects: {
+        'north-north-simplified': {
+          type: 'GeometryCollection',
+          geometries: [{ type: 'Polygon', arcs: [[0], [1]], properties: { VILLCODE: 'A' } }],
+        },
+      },
+    }, [attribute('A')]);
+    const second = decodeVillageGeometry({
+      type: 'Topology',
+      arcs: [island, square],
+      objects: {
+        'north-north-simplified': {
+          type: 'GeometryCollection',
+          geometries: [{ type: 'MultiPolygon', arcs: [[[0]], [[1]]], properties: { VILLCODE: 'B' } }],
+        },
+      },
+    }, [attribute('B')]);
+    const combined = decodeVillageGeometry({
+      type: 'Topology',
+      arcs: [square, hole, island, square],
+      objects: {
+        'north-north-simplified': {
+          type: 'GeometryCollection',
+          geometries: [
+            { type: 'Polygon', arcs: [[0], [1]], properties: { VILLCODE: 'A' } },
+            { type: 'MultiPolygon', arcs: [[[2]], [[3]]], properties: { VILLCODE: 'B' } },
+          ],
+        },
+      },
+    }, [attribute('B'), attribute('A')]);
+    const merged = mergeVillageGeometry([first, second]);
+
+    expect(merged.villages).toEqual(combined.villages);
+    expect(merged.ringIsHole).toHaveLength(combined.ringIsHole.length);
+    expect(Array.from(merged.ringOffsets)).toEqual(Array.from(combined.ringOffsets));
+    expect(Array.from(merged.ringVillageIndices)).toEqual([0, 0, 1, 1]);
+    expect(Array.from(merged.ringPolygonIndices)).toEqual([0, 0, 1, 2]);
+    expect(Array.from(merged.ringIsHole)).toEqual([0, 1, 0, 0]);
+    expect(Array.from(merged.coords)).toEqual(Array.from(combined.coords));
+  });
+
+  it('returns the same object for a single part', () => {
+    const part = decodeVillageGeometry(singleVillageTopology('A'), [attribute('A')]);
+
+    expect(mergeVillageGeometry([part])).toBe(part);
+  });
+
+  it('throws for overlapping or out-of-order village codes', () => {
+    const a = decodeVillageGeometry(singleVillageTopology('A'), [attribute('A')]);
+    const b = decodeVillageGeometry(singleVillageTopology('B'), [attribute('B')]);
+
+    expect(() => mergeVillageGeometry([a, a])).toThrow();
+    expect(() => mergeVillageGeometry([b, a])).toThrow();
+  });
+});
+
+describe('real 北北桃 village files (review H-2)', () => {
+  it('decodes the 桃園 topology object and merges it after 北北', async () => {
+    const { readFileSync } = await import('node:fs');
+    const read = <T>(file: string): T => JSON.parse(
+      readFileSync(new URL(`../../public/data/${file}`, import.meta.url), 'utf8'),
+    ) as T;
+    const northNorth = decodeVillageGeometry(
+      read<Topology>('villages-6300065000.topo.json'),
+      read<VillageGeometryAttribute[]>('villages-6300065000.json'),
+    );
+    const taoyuan = decodeVillageGeometry(
+      read<Topology>('villages-68000.topo.json'),
+      read<VillageGeometryAttribute[]>('villages-68000.json'),
+    );
+    expect(northNorth.villages).toHaveLength(1_512);
+    expect(taoyuan.villages).toHaveLength(529);
+    expect(taoyuan.villages.every(({ VILLCODE }) => VILLCODE.startsWith('68000'))).toBe(true);
+    const merged = mergeVillageGeometry([northNorth, taoyuan]);
+    expect(merged.villages).toHaveLength(2_041);
+    expect(merged.ringOffsets.length).toBe(northNorth.ringOffsets.length + taoyuan.ringOffsets.length - 1);
+    expect(merged.ringOffsets[merged.ringOffsets.length - 1]).toBe(merged.coords.length / 2);
+    const lookup = new VillageGeometryLookup(merged);
+    const zhongli = taoyuan.villages.find(({ TOWNCODE }) => TOWNCODE === '68000020')!;
+    expect(lookup.find(zhongli.demandPoint[0], zhongli.demandPoint[1])?.VILLCODE.startsWith('68000')).toBe(true);
   });
 });

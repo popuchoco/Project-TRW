@@ -1,13 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { loadVillageSource, TransitWorkerRuntime } from '../../src/sim/worker-runtime';
 import { createEmptyNetwork, type Network } from '../../src/city/network';
-import type { TransitWorkerSaveState, TransitWorkerSnapshot, VillageSource } from '../../src/sim/protocol';
+import {
+  isTransitWorkerSaveState,
+  type TransitWorkerSaveState,
+  type TransitWorkerSnapshot,
+  type VillageSource,
+} from '../../src/sim/protocol';
 
 const villages: VillageSource = {
   kind: 'data',
   villages: [
     { VILLCODE: 'A', population: 50_000, demandPoint: [121.50, 25.03] },
     { VILLCODE: 'B', population: 50_000, demandPoint: [121.55, 25.03] },
+  ],
+};
+
+const fixtureVillages: VillageSource = {
+  kind: 'data',
+  villages: [
+    { VILLCODE: 'A', population: 50_000, demandPoint: [121.50, 25.03] },
+    { VILLCODE: 'B', population: 40_000, demandPoint: [121.55, 25.03] },
+    { VILLCODE: 'C', population: 30_000, demandPoint: [121.60, 25.05] },
   ],
 };
 
@@ -44,6 +59,46 @@ async function requestLineFlows(runtime: TransitWorkerRuntime) {
 }
 
 describe('TransitWorkerRuntime', () => {
+  it('loads and sorts villages from multiple URLs', async () => {
+    const responses = {
+      '/villages-a.json': [{ VILLCODE: 'C', population: 30, demandPoint: [123, 25] }],
+      '/villages-b.json': [
+        { VILLCODE: 'B', population: 20, demandPoint: [122, 25] },
+        { VILLCODE: 'A', population: 10, demandPoint: [121, 25] },
+      ],
+    };
+    const requestedUrls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      requestedUrls.push(url);
+      return new Response(JSON.stringify(responses[url as keyof typeof responses]), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const loaded = await loadVillageSource({ kind: 'urls', urls: ['/villages-a.json', '/villages-b.json'] });
+      expect(requestedUrls).toEqual(['/villages-a.json', '/villages-b.json']);
+      expect(loaded).toEqual([
+        { code: 'A', population: 10, lon: 121, lat: 25 },
+        { code: 'B', population: 20, lon: 122, lat: 25 },
+        { code: 'C', population: 30, lon: 123, lat: 25 },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects duplicate VILLCODE values across multiple URLs', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify([
+      { VILLCODE: 'A', population: 10, demandPoint: [121, 25] },
+    ]), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(loadVillageSource({ kind: 'urls', urls: ['/villages-a.json', '/villages-b.json'] }))
+        .rejects.toThrow('duplicate VILLCODE A');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('rejects a fractional population while decoding village attributes', async () => {
     await expect(loadVillageSource({
       kind: 'data',
@@ -85,6 +140,47 @@ describe('TransitWorkerRuntime', () => {
       restoredSnapshot = transitSnapshot(restored.advanceTick());
     }
     expect(restoredSnapshot).toEqual(uninterruptedSnapshot);
+  });
+
+  it('loads the pre-P1-1e save fixture and recomputes its legacy line flows', async () => {
+    const parsedFixture: unknown = JSON.parse(readFileSync(
+      new URL('../fixtures/transit-save-pre-p1-1e.json', import.meta.url),
+      'utf8',
+    ));
+    expect(isTransitWorkerSaveState(parsedFixture)).toBe(true);
+    if (!isTransitWorkerSaveState(parsedFixture)) throw new Error('Expected a valid transit save fixture.');
+
+    const fixture = parsedFixture;
+    const fixtureLines = fixture.transit.snapshot.lines;
+    expect(fixtureLines.length).toBeGreaterThan(0);
+    for (const line of fixtureLines) expect('sectionFlow' in line).toBe(true);
+
+    const fixtureWithoutFlows = JSON.parse(JSON.stringify(fixture)) as TransitWorkerSaveState;
+    for (const line of fixtureWithoutFlows.transit.snapshot.lines) {
+      delete line.sectionFlow;
+      delete line.stationFlows;
+    }
+
+    const loadAndRequestFlows = async (state: TransitWorkerSaveState) => {
+      const runtime = new TransitWorkerRuntime();
+      await runtime.handle({
+        type: 'start', seed: 0, villages: fixtureVillages, network: createEmptyNetwork(), paused: true,
+      });
+      const outputs = await runtime.handle({ type: 'loadState', requestId: 'load-fixture', state });
+      expect(outputs[0]).toEqual({ type: 'loadStateResult', requestId: 'load-fixture', ok: true });
+      return requestLineFlows(runtime);
+    };
+
+    const fixtureFlows = await loadAndRequestFlows(fixture);
+    const recomputedFlows = await loadAndRequestFlows(fixtureWithoutFlows);
+    expect(fixtureFlows).toEqual(recomputedFlows);
+
+    const loads = fixtureFlows.flatMap((line) => Object.values(line.sectionFlow).flatMap((period) => (
+      [...period.forward, ...period.backward].map((segment) => segment.load)
+    )));
+    expect(loads.length).toBeGreaterThan(0);
+    expect(loads.every((load) => Number.isFinite(load) && load >= 0)).toBe(true);
+    expect(loads.some((load) => load > 0)).toBe(true);
   });
 
   it('omits line flows from saves and loads older saves that include them', async () => {

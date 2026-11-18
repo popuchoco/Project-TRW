@@ -1,4 +1,5 @@
 import type { Network } from "../city/network";
+import type { RegionId } from "../city/regions";
 import type { SimSpeed } from "../sim/clock";
 import type { TransitWorkerSaveState } from "../sim/protocol";
 
@@ -27,6 +28,8 @@ export interface SaveSimulationState {
 }
 
 export interface SavePayloadV2 extends Record<string, unknown> {
+  /** Missing means northNorth for legacy saves. */
+  region?: RegionId;
   network: Network;
   camera: SaveCamera;
   view: SaveView;

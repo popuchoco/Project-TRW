@@ -198,6 +198,10 @@ const lineFlowsMessage = {
 describe('transit worker protocol guards', () => {
   it.each([
     ['start', isTransitStartMessage, startMessage],
+    ['start with multiple village URLs', isTransitStartMessage, {
+      ...startMessage,
+      villages: { kind: 'urls', urls: ['/villages-a.json', '/villages-b.json'] },
+    }],
     ['setNetwork', isTransitSetNetworkMessage, { type: 'setNetwork', network }],
     ['pause', isTransitPauseMessage, { type: 'pause' }],
     ['resume', isTransitResumeMessage, { type: 'resume' }],
@@ -440,6 +444,37 @@ describe('transit worker protocol guards', () => {
     })).toBe(false);
   });
 
+  it('allows missing county flows and validates them in snapshots and saves', () => {
+    const withSnapshotCountyFlows = (countyFlows: unknown) => ({
+      ...transitSnapshot,
+      city: { ...transitSnapshot.city, countyFlows },
+    });
+    const withSaveCountyFlows = (countyFlows: unknown) => ({
+      ...saveState,
+      transit: {
+        ...saveState.transit,
+        snapshot: { ...summary, city: { ...summary.city, countyFlows } },
+      },
+    });
+    const validCountyFlows = [{ countyCode: '68000', trips: 12, fareRevenue: 34 }];
+
+    expect(isTransitWorkerSnapshot(transitSnapshot)).toBe(true);
+    expect(isTransitWorkerSaveState(saveState)).toBe(true);
+    expect(isTransitWorkerSnapshot(withSnapshotCountyFlows(validCountyFlows))).toBe(true);
+    expect(isTransitWorkerSaveState(withSaveCountyFlows(validCountyFlows))).toBe(true);
+
+    const invalidCountyFlows = [
+      [{ countyCode: '6800', trips: 12, fareRevenue: 34 }],
+      [{ countyCode: '68000', trips: -1, fareRevenue: 34 }],
+      [{ countyCode: '68000', trips: 12, fareRevenue: -1 }],
+      Array.from({ length: 65 }, () => ({ countyCode: '68000', trips: 1, fareRevenue: 1 })),
+    ];
+    for (const countyFlows of invalidCountyFlows) {
+      expect(isTransitWorkerSnapshot(withSnapshotCountyFlows(countyFlows))).toBe(false);
+      expect(isTransitWorkerSaveState(withSaveCountyFlows(countyFlows))).toBe(false);
+    }
+  });
+
   it('validates quality scores and accepts v2 saves whose older snapshots lack them', () => {
     const numericQuality = {
       wait: 80,
@@ -502,6 +537,24 @@ describe('transit worker protocol guards', () => {
       ...startMessage,
       villages: { kind: 'data', villages: [{ VILLCODE: 'x', population: 1.5, demandPoint: [121, 25] }] },
     })).toBe(false);
+  });
+
+  it('accepts one through eight non-empty village URLs', () => {
+    for (let count = 1; count <= 8; count += 1) {
+      expect(isTransitStartMessage({
+        ...startMessage,
+        villages: { kind: 'urls', urls: Array.from({ length: count }, (_, index) => `/villages-${index}.json`) },
+      })).toBe(true);
+    }
+  });
+
+  it.each([
+    ['zero URLs', []],
+    ['nine URLs', Array.from({ length: 9 }, (_, index) => `/villages-${index}.json`)],
+    ['an empty URL', ['']],
+    ['a URL over 2,000 characters', ['x'.repeat(2_001)]],
+  ])('rejects a village URL source with %s', (_name, urls) => {
+    expect(isTransitStartMessage({ ...startMessage, villages: { kind: 'urls', urls } })).toBe(false);
   });
 
   it('rejects missing transit state and malformed train positions', () => {

@@ -312,9 +312,25 @@ function pointAlongRoute(
 
 export async function loadVillageSource(source: VillageSource): Promise<VillageDemandPoint[]> {
   if (source.kind === 'data') return decodeVillageAttributes(source.villages);
-  const response = await fetch(source.url);
-  if (!response.ok) throw new Error(`Village demand data request failed (${response.status}).`);
-  return decodeVillageAttributes(await response.json() as unknown);
+  if (source.kind === 'url') {
+    const response = await fetch(source.url);
+    if (!response.ok) throw new Error(`Village demand data request failed (${response.status}).`);
+    return decodeVillageAttributes(await response.json() as unknown);
+  }
+
+  const villages: VillageDemandPoint[] = [];
+  for (const url of source.urls) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Village demand data request failed (${response.status}).`);
+    villages.push(...decodeVillageAttributes(await response.json() as unknown));
+  }
+  villages.sort((a, b) => a.code < b.code ? -1 : a.code > b.code ? 1 : 0);
+  for (let index = 1; index < villages.length; index += 1) {
+    if (villages[index - 1]!.code === villages[index]!.code) {
+      throw new Error(`Village demand data contains duplicate VILLCODE ${villages[index]!.code}.`);
+    }
+  }
+  return villages;
 }
 
 function decodeVillageAttributes(value: unknown): VillageDemandPoint[] {

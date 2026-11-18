@@ -2,6 +2,8 @@ import type { CityController } from '../city/controller';
 import { renameStation, setLineCars, setLineTrains } from '../city/commands';
 import type { History } from '../city/history';
 import type { Network } from '../city/network';
+import { DEFAULT_REGION_ID, REGIONS } from '../city/regions';
+import type { RegionId } from '../city/regions';
 import type { MapRenderer } from '../render/MapRenderer';
 import { saveCurrentState, type SaveStateProviders } from '../save/state';
 import type { SavePayloadV2, SaveRecord, SaveStorage } from '../save/types';
@@ -13,7 +15,7 @@ import { createLineFlowsCache, planLineFlowRequests } from './line-flows-cache';
 import { importSaveFile, triggerSaveDownload } from '../save/import-export';
 import { createSimulationPanels, type SimulationPanels } from './panels';
 import type { AppUi } from './app-shell';
-import { createPassengerRequestHandler, nextPassengerStationId } from './passenger-request';
+import { createFollowAnotherGuard, createPassengerRequestHandler, nextPassengerStationId } from './passenger-request';
 
 interface PanelControllerDeps {
   mount: HTMLElement;
@@ -21,6 +23,7 @@ interface PanelControllerDeps {
   networkHistory: History;
   rendererState: { current?: MapRenderer };
   getMapRenderer: () => MapRenderer | undefined;
+  getRegion?: () => RegionId;
   restoredPayload?: SavePayloadV2;
   freshSimulation: SimState;
   saveStorage: SaveStorage;
@@ -59,6 +62,7 @@ export function createPanelController({
   networkHistory,
   rendererState,
   getMapRenderer,
+  getRegion: getRegionDep,
   restoredPayload,
   freshSimulation,
   saveStorage,
@@ -70,6 +74,7 @@ export function createPanelController({
   showStatus,
   updateRenderActivity,
 }: PanelControllerDeps): PanelController {
+  const getRegion = getRegionDep ?? (() => restoredPayload?.region ?? DEFAULT_REGION_ID);
   let latestTransitSnapshot: TransitWorkerSnapshot | undefined;
   const lineFlowsCache = createLineFlowsCache();
   const requestedLineFlows = new Set<string>();
@@ -116,6 +121,7 @@ export function createPanelController({
     );
   };
   const saveStateProviders: SaveStateProviders = {
+    getRegion,
     getNetwork: () => networkHistory.network,
     getCamera: () => {
       const camera = getMapRenderer()?.camera;
@@ -164,15 +170,14 @@ export function createPanelController({
   };
 
   const initializePanels = (cityController: CityController): void => {
-    let followAnotherBaseline: ReturnType<MapRenderer['getFollowPassengerTrip']>;
+    const followAnotherGuard = createFollowAnotherGuard();
+    let followAnotherToken: number | undefined;
     const requestPassenger = createPassengerRequestHandler({
       getNetworkVersion: () => cityController.getNetworkVersion(),
       isMetroViewActive: () => Boolean(rendererState.current?.isMetroView),
       getMetroViewRevision: () => metroViewRevision,
       followPassenger: (trip, gameTime) => {
-        const baseline = followAnotherBaseline;
-        followAnotherBaseline = undefined;
-        if (baseline?.odKey === trip.odKey && baseline.pathSignature === trip.pathSignature) {
+        if (followAnotherToken !== undefined && followAnotherGuard.isSamePassenger(followAnotherToken, trip)) {
           showStatus('這條路線上沒有其他代表旅客');
           return true;
         }
@@ -205,7 +210,8 @@ export function createPanelController({
       },
       followLine: (lineId) => { cityController.followLine(lineId); },
       followPassenger: (stationId) => {
-        followAnotherBaseline = undefined;
+        followAnotherGuard.clear();
+        followAnotherToken = undefined;
         const transitClient = getTransitClient();
         if (!transitClient) {
           showStatus('模擬尚未啟動，無法跟隨代表旅客。');
@@ -233,8 +239,12 @@ export function createPanelController({
           showStatus('模擬尚未啟動，無法選擇另一位代表旅客。');
           return;
         }
-        followAnotherBaseline = currentPassenger;
-        void requestPassenger(stationId, transitClient);
+        const token = followAnotherGuard.begin(currentPassenger);
+        followAnotherToken = token;
+        void requestPassenger(stationId, transitClient).finally(() => {
+          followAnotherGuard.end(token);
+          if (followAnotherToken === token) followAnotherToken = undefined;
+        });
       },
       closePassengerFollow: () => cityController.closePassengerFollow(),
     });
@@ -334,9 +344,16 @@ export function createPanelController({
       updatePanels();
     });
     const dataBase = new URL(import.meta.env.BASE_URL, document.baseURI);
+    const regionId = getRegion();
+    const villageSource = regionId === DEFAULT_REGION_ID
+      ? { kind: 'url' as const, url: new URL('data/villages-6300065000.json', dataBase).href }
+      : {
+        kind: 'urls' as const,
+        urls: REGIONS[regionId].villageAssets.map(({ attributes }) => new URL(attributes, dataBase).href),
+      };
     transitClient.startTransit(
       seed,
-      { kind: 'url', url: new URL('data/villages-6300065000.json', dataBase).href },
+      villageSource,
       network,
       continuation,
       options,
