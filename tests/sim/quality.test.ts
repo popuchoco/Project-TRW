@@ -8,6 +8,7 @@ import {
   scoreDenied,
   scoreTransfers,
   scoreWait,
+  summarizePathCrowding,
 } from '../../src/sim/transit/quality';
 
 describe('transit quality score formulas', () => {
@@ -133,5 +134,72 @@ describe('transit quality score formulas', () => {
     expect(snapshot.city.quality).not.toBeNull();
     expect(snapshot.city.quality!.denied).toBeLessThan(100);
     expect(snapshot.lines[0]?.quality?.denied).toBeLessThan(100);
+  });
+});
+
+describe('path crowding summary', () => {
+  it('uses each path maximum and excludes paths without segment samples', () => {
+    expect(summarizePathCrowding([
+      { passengers: 100, segments: [] },
+      { passengers: 10, segments: [{ lineId: 'line-a', loadFactor: 0.75 }] },
+    ])).toEqual({
+      weightedLoadFactor: 0.75,
+      passengerCount: 10,
+      byLine: new Map([['line-a', { weightedLoadFactor: 0.75, passengerCount: 10 }]]),
+    });
+  });
+
+  it('attributes a path maximum separately to each line and sorts line ids', () => {
+    const summary = summarizePathCrowding([
+      {
+        passengers: 3,
+        segments: [
+          { lineId: 'line-z', loadFactor: 0.4 },
+          { lineId: 'line-a', loadFactor: 0.6 },
+          { lineId: 'line-z', loadFactor: 0.8 },
+        ],
+      },
+      {
+        passengers: 1,
+        segments: [
+          { lineId: 'line-z', loadFactor: 1 },
+          { lineId: 'line-a', loadFactor: 0.2 },
+        ],
+      },
+    ]);
+
+    expect(summary.weightedLoadFactor).toBeCloseTo(0.85);
+    expect(summary.passengerCount).toBe(4);
+    expect([...summary.byLine.keys()]).toEqual(['line-a', 'line-z']);
+    expect(summary.byLine.get('line-a')?.weightedLoadFactor).toBeCloseTo(0.5);
+    expect(summary.byLine.get('line-a')?.passengerCount).toBe(4);
+    expect(summary.byLine.get('line-z')?.weightedLoadFactor).toBeCloseTo(0.85);
+    expect(summary.byLine.get('line-z')?.passengerCount).toBe(4);
+  });
+
+  it('does not let zero-passenger paths dilute positive samples', () => {
+    expect(summarizePathCrowding([
+      { passengers: 0, segments: [{ lineId: 'line-a', loadFactor: 1 }] },
+      { passengers: 2, segments: [{ lineId: 'line-a', loadFactor: 0.5 }] },
+    ])).toEqual({
+      weightedLoadFactor: 0.5,
+      passengerCount: 2,
+      byLine: new Map([['line-a', { weightedLoadFactor: 0.5, passengerCount: 2 }]]),
+    });
+  });
+
+  it('returns zero summaries for empty input and preserves a zero-load boundary', () => {
+    expect(summarizePathCrowding([])).toEqual({
+      weightedLoadFactor: 0,
+      passengerCount: 0,
+      byLine: new Map(),
+    });
+    expect(summarizePathCrowding([
+      { passengers: 4, segments: [{ lineId: 'line-a', loadFactor: 0 }] },
+    ])).toEqual({
+      weightedLoadFactor: 0,
+      passengerCount: 4,
+      byLine: new Map([['line-a', { weightedLoadFactor: 0, passengerCount: 4 }]]),
+    });
   });
 });
