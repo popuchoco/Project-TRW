@@ -112,6 +112,7 @@ export function createPanelController({
       followedPassenger,
       stationNames,
       lineNames,
+      getMapRenderer()?.isPassengerTripEnded() ?? false,
     );
   };
   const saveStateProviders: SaveStateProviders = {
@@ -202,6 +203,15 @@ export function createPanelController({
         }
         void requestPassenger(stationId, transitClient);
       },
+      replayPassenger: () => {
+        const gameTime = getTransitClient()?.getStatus().gameTimeMs;
+        if (gameTime === undefined) {
+          showStatus('模擬尚未啟動，無法重播。');
+          return;
+        }
+        if (!cityController.replayPassenger(gameTime)) showStatus('無法重播代表旅客。');
+      },
+      closePassengerFollow: () => cityController.closePassengerFollow(),
     });
     metroViewActive = Boolean(rendererState.current?.isMetroView);
     panelControllerRef.current.element.hidden = !metroViewActive;

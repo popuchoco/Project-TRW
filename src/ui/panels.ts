@@ -71,6 +71,8 @@ export interface PanelCallbacks {
   setLineCars(lineId: string, cars: number): void;
   followLine(lineId: string): void;
   followPassenger(stationId: string): void;
+  replayPassenger(): void;
+  closePassengerFollow(): void;
 }
 
 export interface SimulationPanels {
@@ -86,6 +88,7 @@ export interface SimulationPanels {
     passenger?: RepresentativePassenger,
     stationNames?: PassengerStationNames,
     lineNames?: PassengerLineNames,
+    tripEnded?: boolean,
   ): void;
 }
 
@@ -369,7 +372,15 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
   const follow = makeSection('跟隨列車／旅客');
   const followDetails = element('p', 'panel-placeholder');
   const passengerDetails = element('div', 'passenger-follow-details');
-  follow.content.append(followDetails, passengerDetails);
+  const followActions = element('div', 'passenger-follow-actions');
+  const replayPassengerButton = element('button', 'source-button', '重播');
+  replayPassengerButton.type = 'button';
+  replayPassengerButton.addEventListener('click', callbacks.replayPassenger);
+  const closePassengerFollowButton = element('button', 'source-button', '關閉');
+  closePassengerFollowButton.type = 'button';
+  closePassengerFollowButton.addEventListener('click', callbacks.closePassengerFollow);
+  followActions.append(replayPassengerButton, closePassengerFollowButton);
+  follow.content.append(followDetails, passengerDetails, followActions);
   follow.section.hidden = true;
   root.append(city.section, station.section, routes.section, follow.section);
   container.append(root);
@@ -445,9 +456,12 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     passenger?: RepresentativePassenger,
     stationNames: PassengerStationNames = new Map(),
     lineNames: PassengerLineNames = new Map(),
+    tripEnded = false,
   ): void => {
     follow.section.hidden = !info && !passenger;
-    followDetails.hidden = !info;
+    followDetails.hidden = !info && !(passenger && tripEnded);
+    replayPassengerButton.hidden = !passenger || !tripEnded;
+    closePassengerFollowButton.hidden = !info && !passenger;
     passengerDetails.replaceChildren();
     if (passenger) {
       passengerDetails.append(createPassengerView(
@@ -456,7 +470,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
       ));
     }
     if (!info) {
-      followDetails.textContent = '';
+      followDetails.textContent = passenger && tripEnded ? '行程已結束' : '';
       return;
     }
     const loadFactor = info.loadFactor !== undefined && Number.isFinite(info.loadFactor)
