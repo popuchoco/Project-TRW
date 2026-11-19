@@ -13,7 +13,7 @@ const STATIC_PRECACHE = [
   "./data/villages-68000-manifest.json",
   "./data/villages-68000.json",
   "./data/villages-68000.topo.json",
-  // 北北桃都會細層的地圖細節（M-1 延伸）：LOD2 全島＋北北視圖（初始框與「顯示全北北」）
+  // 北北桃視圖（初始框與「顯示全北北桃」）
   // 會載入的 LOD3 縣市：臺北、新北、基隆、桃園、宜蘭、新竹縣、苗栗、新竹市。
   // 其他 LOD3 仍走 runtime cache。
   "./data/trw-1140318-lod2.topo.json",

@@ -667,10 +667,6 @@ export class MapRenderer {
     this.focusBounds(this.allVillageBounds ?? this.regionBounds);
   }
 
-  showAllNorthNorth(): void {
-    this.showAllRegion();
-  }
-
   returnToIslandView(): void {
     if (!this.metroViewActive) return;
     this.metroViewActive = false;

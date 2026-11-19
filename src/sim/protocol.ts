@@ -338,10 +338,18 @@ function isStationFlows(value: unknown, stationCount: number): boolean {
 }
 
 function isCountyFlows(value: unknown): boolean {
-  return Array.isArray(value) && value.length <= 64 && value.every((flow: unknown) =>
-    isRecord(flow)
-      && typeof flow.countyCode === 'string' && /^\d{5}$/.test(flow.countyCode)
-      && isNonNegativeNumber(flow.trips) && isNonNegativeNumber(flow.fareRevenue));
+  if (!Array.isArray(value) || value.length > 64) return false;
+  const pairs = new Set<string>();
+  for (const flow of value) {
+    if (!isRecord(flow)
+      || typeof flow.originCounty !== 'string' || flow.originCounty.length < 1 || flow.originCounty.length > 16
+      || typeof flow.destinationCounty !== 'string' || flow.destinationCounty.length < 1 || flow.destinationCounty.length > 16
+      || !isNonNegativeNumber(flow.trips) || !isNonNegativeNumber(flow.fareRevenue)) return false;
+    const pair = JSON.stringify([flow.originCounty, flow.destinationCounty]);
+    if (pairs.has(pair)) return false;
+    pairs.add(pair);
+  }
+  return true;
 }
 
 function isTransitSummary(

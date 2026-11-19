@@ -31,6 +31,12 @@ import {
 } from './graph';
 import { calculateQualityScore, summarizePathCrowding, type QualityScore } from './quality';
 import {
+  addCountyFlow,
+  scaleCountyFlows,
+  summarizeCountyFlows,
+  type CountyFlow,
+} from './cross-city';
+import {
   buildRepresentativeTripPath,
   compareRepresentativeTripRouteKeys,
   representativeStationIds,
@@ -74,6 +80,7 @@ export interface CityDailyStats {
   transfers: number;
   quality: QualityScore | null;
   fareRevenue: number;
+  countyFlows?: CountyFlow[];
   operatingCost: number;
   /** (revenue − cost) / cost; zero when no service cost exists. */
   profitLossRatio: number;
@@ -179,6 +186,7 @@ interface EquilibriumRoute {
   path: TransitPath;
   desiredTrips: number;
   fareTotal: number;
+  countyFlows: Map<string, CountyFlow>;
 }
 
 interface VillageToStationPath {
@@ -342,6 +350,9 @@ function cloneSnapshot(snapshot: TransitSnapshotState): TransitSummarySnapshot {
         ...snapshot.city.quality,
         metrics: snapshot.city.quality.metrics ? { ...snapshot.city.quality.metrics } : undefined,
       } : null,
+      ...(snapshot.city.countyFlows === undefined ? {} : {
+        countyFlows: snapshot.city.countyFlows.map((flow) => ({ ...flow })),
+      }),
     },
     stations: snapshot.stations.map((station) => ({
       ...station,
@@ -731,8 +742,28 @@ export class TransitSim {
           if (existing) {
             existing.desiredTrips += desiredTrips;
             existing.fareTotal += fareTotal;
+            addCountyFlow(
+              existing.countyFlows,
+              direction.origin.code,
+              direction.destination.code,
+              desiredTrips,
+              fareTotal,
+            );
           } else {
-            rows.set(path.signature, { path, desiredTrips, fareTotal });
+            const route: EquilibriumRoute = {
+              path,
+              desiredTrips,
+              fareTotal,
+              countyFlows: new Map(),
+            };
+            addCountyFlow(
+              route.countyFlows,
+              direction.origin.code,
+              direction.destination.code,
+              desiredTrips,
+              fareTotal,
+            );
+            rows.set(path.signature, route);
           }
           const odKey = `${direction.origin.code}>${direction.destination.code}`;
           const routeOrder = { odKey, flow: desiredTrips, periodId, pathSignature: path.signature };
@@ -836,6 +867,7 @@ export class TransitSim {
     let transfers = 0;
     let fareRevenue = 0;
     let operatingCost = 0;
+    const cityCountyFlows = new Map<string, CountyFlow>();
     const cityQuality = emptyQualityAccumulator();
     const lineQuality = new Map(graph.lines.map((line) => [line.id, emptyQualityAccumulator()]));
 
@@ -878,6 +910,16 @@ export class TransitSim {
         // Each path's riders are scaled by its tightest segment's capacity ratio.
         // That records denied boardings proportionally without random allocation.
         const accepted = attempted * acceptedFactor;
+        const ratio = route.desiredTrips > 0 ? accepted / route.desiredTrips : 0;
+        for (const flow of scaleCountyFlows(route.countyFlows, ratio)) {
+          addCountyFlow(
+            cityCountyFlows,
+            flow.originCounty,
+            flow.destinationCounty,
+            flow.trips,
+            flow.fareRevenue,
+          );
+        }
         const denied = attempted - accepted;
         dailyRidership += accepted;
         deniedBoardings += denied;
@@ -1095,6 +1137,7 @@ export class TransitSim {
         transfers,
         quality: qualityFromAccumulator(cityQuality),
         fareRevenue,
+        countyFlows: summarizeCountyFlows([...cityCountyFlows.values()]).flows,
         operatingCost,
         profitLossRatio: operatingCost > 0 ? (fareRevenue - operatingCost) / operatingCost : 0,
       },

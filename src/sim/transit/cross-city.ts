@@ -14,7 +14,9 @@ function assertNonNegativeFinite(value: number, name: string): void {
 }
 
 function flowKey(originCounty: string, destinationCounty: string): string {
-  return JSON.stringify([originCounty, destinationCounty]);
+  // Map key only (never serialized). NUL cannot appear in a county code, so the pair stays unambiguous
+  // without allocating a JSON array per call in the demand hot loop.
+  return `${originCounty}\u0000${destinationCounty}`;
 }
 
 function compareCountyFlows(a: CountyFlow, b: CountyFlow): number {
@@ -45,7 +47,14 @@ export function addCountyFlow(
   assertNonNegativeFinite(nextTrips, 'trips total');
   assertNonNegativeFinite(nextFareRevenue, 'fare total');
 
-  acc.set(key, { originCounty, destinationCounty, trips: nextTrips, fareRevenue: nextFareRevenue });
+  // Accumulators own their entries (scale/summarize return copies), so update in place
+  // instead of allocating a new record on every demand pair.
+  if (current) {
+    current.trips = nextTrips;
+    current.fareRevenue = nextFareRevenue;
+  } else {
+    acc.set(key, { originCounty, destinationCounty, trips: nextTrips, fareRevenue: nextFareRevenue });
+  }
 }
 
 export function scaleCountyFlows(flows: ReadonlyMap<string, CountyFlow>, ratio: number): CountyFlow[] {

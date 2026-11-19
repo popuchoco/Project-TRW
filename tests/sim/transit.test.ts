@@ -126,6 +126,41 @@ describe('TransitSim behavior', () => {
     expect(JSON.parse(JSON.stringify(result))).toEqual(result);
   });
 
+  it('summarizes accepted county-pair trips and fare revenue in stable order', () => {
+    const villages: VillageDemandPoint[] = [
+      { code: '63000123456', population: 50_000, lon: 121.50, lat: 25.03 },
+      { code: '68000123456', population: 50_000, lon: 121.55, lat: 25.03 },
+      { code: '63000654321', population: 50_000, lon: 121.525, lat: 25.03 },
+    ];
+    const network: Network = {
+      nextId: 5,
+      stations: [
+        { id: 's1', name: '臺北端', lon: 121.50, lat: 25.03 },
+        { id: 's2', name: '中間站', lon: 121.525, lat: 25.03 },
+        { id: 's3', name: '桃園端', lon: 121.55, lat: 25.03 },
+      ],
+      lines: [{
+        id: 'l4', mode: 'brt', stationIds: ['s1', 's2', 's3'],
+        peakTrains: 1_000, offPeakTrains: 1_000, cars: 1, color: '#123456', name: '跨縣市線',
+      }],
+    };
+    const result = new TransitSim(villages, network).advance(GAME_DAY_MS);
+    const flows = result.city.countyFlows!;
+    const tripsTotal = flows.reduce((total, flow) => total + flow.trips, 0);
+    const fareTotal = flows.reduce((total, flow) => total + flow.fareRevenue, 0);
+    const relativeError = (actual: number, expected: number): number =>
+      Math.abs(actual - expected) / Math.max(Math.abs(expected), Number.EPSILON);
+
+    expect(relativeError(tripsTotal, result.city.dailyRidership)).toBeLessThanOrEqual(1e-9);
+    expect(relativeError(fareTotal, result.city.fareRevenue)).toBeLessThanOrEqual(1e-9);
+    expect(flows.filter((flow) => flow.originCounty !== flow.destinationCounty)
+      .reduce((total, flow) => total + flow.trips, 0)).toBeGreaterThan(0);
+    expect(flows.some((flow) => flow.originCounty === '63000' && flow.destinationCounty === '63000'))
+      .toBe(true);
+    expect(flows.map(({ originCounty, destinationCounty }) => `${originCounty}>${destinationCounty}`))
+      .toEqual(flows.map(({ originCounty, destinationCounty }) => `${originCounty}>${destinationCounty}`).sort());
+  });
+
   it('scales overloaded segment flow to capacity and records denied boardings', () => {
     const sim = new TransitSim(TEST_VILLAGES, twoStationNetwork(1));
     let result = sim.snapshot();
