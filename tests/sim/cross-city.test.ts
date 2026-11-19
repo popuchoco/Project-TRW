@@ -52,6 +52,20 @@ describe('cross-city county flows', () => {
     });
   });
 
+  it('keeps one entry per county pair and never aliases accumulator entries in outputs', () => {
+    const flows = new Map<string, CountyFlow>();
+    for (let i = 0; i < 1_000; i += 1) addCountyFlow(flows, '6800001', '6300001', 0.5, 10);
+    expect(flows.size).toBe(1);
+    expect([...flows.values()][0]).toEqual({ originCounty: '68000', destinationCounty: '63000', trips: 500, fareRevenue: 10_000 });
+
+    const scaled = scaleCountyFlows(flows, 1);
+    const summary = summarizeCountyFlows([...flows.values()]);
+    addCountyFlow(flows, '6800001', '6300001', 1, 1);
+    expect(scaled[0]!.trips).toBe(500);
+    expect(summary.flows[0]!.trips).toBe(500);
+    expect([...flows.values()][0]!.trips).toBe(501);
+  });
+
   it('throws for negative or non-finite input values', () => {
     const flows = new Map<string, CountyFlow>();
     expect(() => addCountyFlow(flows, '6800001', '6600001', -1, 10)).toThrow(RangeError);
