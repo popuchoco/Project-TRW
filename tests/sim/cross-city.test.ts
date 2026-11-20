@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addIndexedCountyFlow,
   addCountyFlow,
   countyOfVillage,
   scaleCountyFlows,
@@ -8,6 +9,19 @@ import {
 } from '../../src/sim/transit/cross-city';
 
 describe('cross-city county flows', () => {
+  it('accumulates indexed county pairs without string keys', () => {
+    const flows = new Map<number, { trips: number; fareRevenue: number }>();
+    addIndexedCountyFlow(flows, 7, 0.1, 1);
+    addIndexedCountyFlow(flows, 7, 0.2, 2);
+    addIndexedCountyFlow(flows, 3, 4, 5);
+
+    expect([...flows.entries()]).toEqual([
+      [7, { trips: 0.30000000000000004, fareRevenue: 3 }],
+      [3, { trips: 4, fareRevenue: 5 }],
+    ]);
+    expect(() => addIndexedCountyFlow(flows, -1, 1, 1)).toThrow(RangeError);
+  });
+
   it('takes the first five characters as the county code', () => {
     expect(countyOfVillage('6800001234')).toBe('68000');
   });

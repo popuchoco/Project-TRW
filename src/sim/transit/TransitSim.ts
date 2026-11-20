@@ -31,10 +31,11 @@ import {
 } from './graph';
 import { calculateQualityScore, summarizePathCrowding, type QualityScore } from './quality';
 import {
-  addCountyFlow,
-  scaleCountyFlows,
+  addIndexedCountyFlow,
+  countyOfVillage,
   summarizeCountyFlows,
   type CountyFlow,
+  type CountyFlowTotals,
 } from './cross-city';
 import {
   buildRepresentativeTripPath,
@@ -186,7 +187,7 @@ interface EquilibriumRoute {
   path: TransitPath;
   desiredTrips: number;
   fareTotal: number;
-  countyFlows: Map<string, CountyFlow>;
+  countyFlows: Map<number, CountyFlowTotals>;
 }
 
 interface VillageToStationPath {
@@ -476,6 +477,8 @@ function lineMetrics(runtime: TransitGraphRuntime, lineId: string): LineRuntimeM
 export class TransitSim {
   private readonly demand: VillageDemandModel;
   private readonly villageFingerprint: string;
+  private readonly countyCodes: string[];
+  private readonly villageCountyIndex: Uint16Array;
   private networkState: Network;
   private graph: TransitGraphRuntime | undefined;
   private villageAccess: WalkAccess[][] = [];
@@ -497,6 +500,9 @@ export class TransitSim {
   ) {
     this.demand = buildVillageDemandModel(villages, demandParameters);
     this.villageFingerprint = fingerprintVillages(this.demand.villages);
+    this.countyCodes = [...new Set(this.demand.villages.map(({ code }) => countyOfVillage(code)))].sort(compareText);
+    const countyIndexByCode = new Map(this.countyCodes.map((code, index) => [code, index]));
+    this.villageCountyIndex = Uint16Array.from(this.demand.villages, ({ code }) => countyIndexByCode.get(countyOfVillage(code))!);
     this.networkState = copyNetwork(network);
     this.latestSnapshot = makeEmptySnapshot(this.networkState.stations, this.demand.pairs.length);
   }
@@ -725,8 +731,8 @@ export class TransitSim {
       const origin = this.demand.villages[originIndex]!;
       const destination = this.demand.villages[destinationIndex]!;
       const directions = [
-        { path: best.path, origin, destination, walkInSeconds: best.walkInSeconds, walkOutSeconds: best.walkOutSeconds },
-        { path: reverseTransitPath(best.path), origin: destination, destination: origin,
+        { path: best.path, originIndex, destinationIndex, origin, destination, walkInSeconds: best.walkInSeconds, walkOutSeconds: best.walkOutSeconds },
+        { path: reverseTransitPath(best.path), originIndex: destinationIndex, destinationIndex: originIndex, origin: destination, destination: origin,
           walkInSeconds: best.walkOutSeconds, walkOutSeconds: best.walkInSeconds },
       ];
       for (const periodId of group.periods) {
@@ -742,10 +748,11 @@ export class TransitSim {
           if (existing) {
             existing.desiredTrips += desiredTrips;
             existing.fareTotal += fareTotal;
-            addCountyFlow(
+            const originCountyIndex = this.villageCountyIndex[direction.originIndex]!;
+            const destinationCountyIndex = this.villageCountyIndex[direction.destinationIndex]!;
+            addIndexedCountyFlow(
               existing.countyFlows,
-              direction.origin.code,
-              direction.destination.code,
+              originCountyIndex * this.countyCodes.length + destinationCountyIndex,
               desiredTrips,
               fareTotal,
             );
@@ -754,12 +761,13 @@ export class TransitSim {
               path,
               desiredTrips,
               fareTotal,
-              countyFlows: new Map(),
+              countyFlows: new Map<number, CountyFlowTotals>(),
             };
-            addCountyFlow(
+            const originCountyIndex = this.villageCountyIndex[direction.originIndex]!;
+            const destinationCountyIndex = this.villageCountyIndex[direction.destinationIndex]!;
+            addIndexedCountyFlow(
               route.countyFlows,
-              direction.origin.code,
-              direction.destination.code,
+              originCountyIndex * this.countyCodes.length + destinationCountyIndex,
               desiredTrips,
               fareTotal,
             );
@@ -867,7 +875,7 @@ export class TransitSim {
     let transfers = 0;
     let fareRevenue = 0;
     let operatingCost = 0;
-    const cityCountyFlows = new Map<string, CountyFlow>();
+    const cityCountyFlows = new Map<number, CountyFlowTotals>();
     const cityQuality = emptyQualityAccumulator();
     const lineQuality = new Map(graph.lines.map((line) => [line.id, emptyQualityAccumulator()]));
 
@@ -911,14 +919,11 @@ export class TransitSim {
         // That records denied boardings proportionally without random allocation.
         const accepted = attempted * acceptedFactor;
         const ratio = route.desiredTrips > 0 ? accepted / route.desiredTrips : 0;
-        for (const flow of scaleCountyFlows(route.countyFlows, ratio)) {
-          addCountyFlow(
-            cityCountyFlows,
-            flow.originCounty,
-            flow.destinationCounty,
-            flow.trips,
-            flow.fareRevenue,
-          );
+        const sortedCountyFlows = [...route.countyFlows.entries()].sort(([a], [b]) => a - b);
+        for (const [pairIndex, flow] of sortedCountyFlows) {
+          const trips = flow.trips * ratio;
+          const fareRevenue = flow.fareRevenue * ratio;
+          addIndexedCountyFlow(cityCountyFlows, pairIndex, trips, fareRevenue);
         }
         const denied = attempted - accepted;
         dailyRidership += accepted;
@@ -1137,7 +1142,12 @@ export class TransitSim {
         transfers,
         quality: qualityFromAccumulator(cityQuality),
         fareRevenue,
-        countyFlows: summarizeCountyFlows([...cityCountyFlows.values()]).flows,
+        countyFlows: summarizeCountyFlows([...cityCountyFlows.entries()].map(([pairIndex, flow]) => ({
+          originCounty: this.countyCodes[Math.floor(pairIndex / this.countyCodes.length)]!,
+          destinationCounty: this.countyCodes[pairIndex % this.countyCodes.length]!,
+          trips: flow.trips,
+          fareRevenue: flow.fareRevenue,
+        }))).flows,
         operatingCost,
         profitLossRatio: operatingCost > 0 ? (fareRevenue - operatingCost) / operatingCost : 0,
       },
