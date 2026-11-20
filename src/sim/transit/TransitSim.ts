@@ -693,6 +693,7 @@ export class TransitSim {
     const byPeriod = new Map<SimulationPeriodId, Map<string, EquilibriumRoute>>();
     const potentialByPeriod = new Map<SimulationPeriodId, number>();
     const reversePathsBySignature = new Map<string, TransitPath>();
+    const representativeStationsBySignature = new Map<string, string[]>();
     this.representativeRoutesByPeriod = new Map();
     for (const period of SIMULATION_BALANCE.periods) {
       const id = period.id;
@@ -706,7 +707,15 @@ export class TransitSim {
         if (this.villageAccess[pair.first]!.length === 0 || this.villageAccess[pair.second]!.length === 0) continue;
         const dailyTripsEachDirection = pair.gravityWeight / this.demand.totalDirectedGravityWeight
           * this.demand.totalDailyTrips;
-        this.addPairDemand(pair.first, pair.second, pair.distanceKm, dailyTripsEachDirection, byPeriod, reversePathsBySignature);
+        this.addPairDemand(
+          pair.first,
+          pair.second,
+          pair.distanceKm,
+          dailyTripsEachDirection,
+          byPeriod,
+          reversePathsBySignature,
+          representativeStationsBySignature,
+        );
       }
     }
     return SIMULATION_BALANCE.periods.map(({ id }) => ({
@@ -725,6 +734,7 @@ export class TransitSim {
     dailyTrips: number,
     rowsByPeriod: Map<SimulationPeriodId, Map<string, EquilibriumRoute>>,
     reversePathsBySignature: Map<string, TransitPath>,
+    representativeStationsBySignature: Map<string, string[]>,
   ): void {
     const alternativeTime = distanceKm / SIMULATION_BALANCE.alternativeMode.speedKmh * 3_600
       + SIMULATION_BALANCE.alternativeMode.fixedTimeSeconds;
@@ -788,12 +798,27 @@ export class TransitSim {
           }
           const odKey = `${direction.origin.code}>${direction.destination.code}`;
           const routeOrder = { odKey, flow: desiredTrips, periodId, pathSignature: path.signature };
-          const routeStationIds = representativeStationIds(path, this.graph!);
-          const winningStations = routeStationIds.filter((stationId) => {
+          let routeStationIds = representativeStationsBySignature.get(path.signature);
+          if (!routeStationIds) {
+            routeStationIds = representativeStationIds(path, this.graph!);
+            representativeStationsBySignature.set(path.signature, routeStationIds);
+          }
+          let hasWinningStation = false;
+          for (const stationId of routeStationIds) {
             const selected = stationRoutes.get(stationId);
-            return !selected || compareRepresentativeTripRouteKeys(routeOrder, representativeTripRouteOrder(selected)) < 0;
-          });
-          if (winningStations.length > 0) {
+            if (!selected || compareRepresentativeTripRouteKeys(routeOrder, representativeTripRouteOrder(selected)) < 0) {
+              hasWinningStation = true;
+              break;
+            }
+          }
+          if (hasWinningStation) {
+            const winningStations: string[] = [];
+            for (const stationId of routeStationIds) {
+              const selected = stationRoutes.get(stationId);
+              if (!selected || compareRepresentativeTripRouteKeys(routeOrder, representativeTripRouteOrder(selected)) < 0) {
+                winningStations.push(stationId);
+              }
+            }
             const candidate: RepresentativeTripRoute = {
               odKey,
               flow: desiredTrips,
