@@ -651,16 +651,21 @@ export class TransitSim {
     const cached = cache[destinationStationIndex];
     if (cached !== undefined) return cached;
     const graph = this.graph!;
-    let best: VillageToStationPath | null = null;
+    let bestPath: TransitPath | null = null;
+    let bestTimeSeconds = 0;
+    let bestWalkSeconds = 0;
     for (const access of this.villageAccess[villageIndex]!) {
       const path = shortestStationPath(graph, periodId, access.stationId, destinationStationId);
       if (!path) continue;
       const timeSeconds = access.walkSeconds + path.timeSeconds;
-      if (!best || timeSeconds < best.timeSeconds - 1e-9
-        || (Math.abs(timeSeconds - best.timeSeconds) <= 1e-9 && path.signature < best.path.signature)) {
-        best = { path, timeSeconds, walkSeconds: access.walkSeconds };
+      if (!bestPath || timeSeconds < bestTimeSeconds - 1e-9
+        || (Math.abs(timeSeconds - bestTimeSeconds) <= 1e-9 && path.signature < bestPath.signature)) {
+        bestPath = path;
+        bestTimeSeconds = timeSeconds;
+        bestWalkSeconds = access.walkSeconds;
       }
     }
+    const best = bestPath ? { path: bestPath, timeSeconds: bestTimeSeconds, walkSeconds: bestWalkSeconds } : null;
     cache[destinationStationIndex] = best;
     return best;
   }
@@ -670,23 +675,29 @@ export class TransitSim {
     destinationIndex: number,
     periodId: SimulationPeriodId,
   ): { path: TransitPath; timeSeconds: number; walkInSeconds: number; walkOutSeconds: number } | null {
-    let best: { path: TransitPath; timeSeconds: number; walkInSeconds: number; walkOutSeconds: number } | null = null;
+    let bestPath: TransitPath | null = null;
+    let bestTimeSeconds = 0;
+    let bestWalkInSeconds = 0;
+    let bestWalkOutSeconds = 0;
     for (const egress of this.villageAccess[destinationIndex]!) {
       const partial = this.villageToStation(originIndex, egress.stationId, periodId);
       if (!partial) continue;
       const timeSeconds = partial.timeSeconds + egress.walkSeconds;
-      if (!best || timeSeconds < best.timeSeconds - 1e-9
-        || (Math.abs(timeSeconds - best.timeSeconds) <= 1e-9
-          && partial.path.signature < best.path.signature)) {
-        best = {
-          path: partial.path,
-          timeSeconds,
-          walkInSeconds: partial.walkSeconds,
-          walkOutSeconds: egress.walkSeconds,
-        };
+      if (!bestPath || timeSeconds < bestTimeSeconds - 1e-9
+        || (Math.abs(timeSeconds - bestTimeSeconds) <= 1e-9
+          && partial.path.signature < bestPath.signature)) {
+        bestPath = partial.path;
+        bestTimeSeconds = timeSeconds;
+        bestWalkInSeconds = partial.walkSeconds;
+        bestWalkOutSeconds = egress.walkSeconds;
       }
     }
-    return best;
+    return bestPath ? {
+      path: bestPath,
+      timeSeconds: bestTimeSeconds,
+      walkInSeconds: bestWalkInSeconds,
+      walkOutSeconds: bestWalkOutSeconds,
+    } : null;
   }
 
   private buildEquilibrium(): PeriodEquilibrium[] {
