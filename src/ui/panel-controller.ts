@@ -76,6 +76,7 @@ export function createPanelController({
 }: PanelControllerDeps): PanelController {
   const getRegion = getRegionDep ?? (() => restoredPayload?.region ?? DEFAULT_REGION_ID);
   let latestTransitSnapshot: TransitWorkerSnapshot | undefined;
+  const transitErrorSubscriptions = new WeakSet<SimClient>();
   const lineFlowsCache = createLineFlowsCache();
   const requestedLineFlows = new Set<string>();
   let lineFlowsFailureNotified = false;
@@ -321,6 +322,15 @@ export function createPanelController({
   ): void => {
     lineFlowsCache.clear();
     requestedLineFlows.clear();
+    if (!transitErrorSubscriptions.has(transitClient)) {
+      transitErrorSubscriptions.add(transitClient);
+      let errorNotified = false;
+      transitClient.subscribeErrors(() => {
+        if (errorNotified) return;
+        errorNotified = true;
+        showStatus('模擬啟動失敗，請重新整理頁面。');
+      });
+    }
     transitClient.subscribe((snapshot) => {
       if ('trains' in snapshot) {
         latestTransitSnapshot = snapshot;
