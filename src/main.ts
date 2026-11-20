@@ -8,7 +8,7 @@ import { RenderScheduler } from './render/RenderScheduler';
 import { IndexedDbSaveStorage } from './save/storage';
 import { loadSave, savePayload } from './save/save';
 import { requestPersistentStorage } from './save/persistence';
-import type { SavePayloadV2 } from './save/types';
+import type { SavePayloadV2, SaveRecord } from './save/types';
 import { registerServiceWorker } from './sw/register';
 import { SimClient } from './sim/client';
 import { createSim } from './sim/core';
@@ -92,6 +92,13 @@ let automaticPauseOnHide = false;
 let selectedSimSpeed: SimSpeed = 1;
 
 const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
+
+function isSaveRecordV2(
+  record: SaveRecord | undefined,
+): record is SaveRecord & { schemaVersion: 2; payload: SavePayloadV2 } {
+  return record?.schemaVersion === 2;
+}
+
 window.__TRW__ = {
   ready,
   get renderCount() { return renderScheduler?.renderCount ?? 0; },
@@ -147,7 +154,11 @@ async function startApp(): Promise<void> {
   let restoredPayload: SavePayloadV2 | undefined;
   try {
     const savedRecord = await loadSave(saveStorage);
-    restoredPayload = savedRecord?.payload as SavePayloadV2 | undefined;
+    if (isSaveRecordV2(savedRecord)) {
+      restoredPayload = savedRecord.payload;
+    } else if (savedRecord) {
+      console.warn(`存檔版本 ${savedRecord.schemaVersion} 不受支援，將以新遊戲開始。`);
+    }
   } catch (error) {
     console.info('Saved game could not be loaded; starting with a fresh session.', error);
   }
@@ -203,9 +214,14 @@ async function startApp(): Promise<void> {
       try {
         await panelController.saveLiveState();
         const savedRecord = await loadSave(saveStorage);
-        if (!savedRecord) throw new Error('找不到存檔。');
+        if (!isSaveRecordV2(savedRecord)) {
+          if (savedRecord) {
+            console.warn(`存檔版本 ${savedRecord.schemaVersion} 不受支援，無法延伸到桃園。`);
+          }
+          throw new Error('找不到存檔。');
+        }
         const extendedPayload = extendRegionPayload(
-          savedRecord.payload as SavePayloadV2,
+          savedRecord.payload,
           'northNorthTaoyuan',
         );
         await savePayload(saveStorage, extendedPayload);
