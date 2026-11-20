@@ -410,9 +410,7 @@ export function createSimulationPanels(container: HTMLElement, callbacks: PanelC
     cityRidership.value.textContent = `${formatPanelCount(cityStats?.dailyRidership ?? 0)} 人`;
     cityShare.value.textContent = formatPanelPercent(cityStats?.transitShare ?? 0);
     cityProfit.value.textContent = formatPanelPercent(cityStats?.profitLossRatio ?? 0);
-    const crossCity = crossCityView((cityStats as unknown as {
-      countyFlows?: Parameters<typeof crossCityView>[0];
-    } | undefined)?.countyFlows);
+    const crossCity = crossCityView(cityStats?.countyFlows);
     cityCrossCityTrips.value.textContent = crossCity.trips;
     cityCrossCityRevenue.value.textContent = crossCity.fareRevenue;
     cityCrossCityPairs.replaceChildren(...(crossCity.topPairs.length

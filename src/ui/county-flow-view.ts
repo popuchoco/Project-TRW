@@ -1,6 +1,20 @@
 import { compareText } from '../sim/compare';
 import type { CountyFlow } from '../sim/transit/cross-city';
-import { formatPanelCount } from './panels';
+
+const countFormat = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
+const moneyFormat = new Intl.NumberFormat('zh-TW', {
+  style: 'currency',
+  currency: 'TWD',
+  maximumFractionDigits: 0,
+});
+
+function formatCountyCount(value: number): string {
+  return countFormat.format(Math.round(value));
+}
+
+function formatCountyMoney(value: number): string {
+  return moneyFormat.format(Math.round(value));
+}
 
 export const COUNTY_NAMES: Readonly<Record<string, string>> = {
   '63000': '臺北市',
@@ -40,12 +54,12 @@ export function crossCityView(flows: readonly CountyFlow[] | undefined): CrossCi
     .sort(compareFlowsByTrips)
     .slice(0, 3)
     .map((flow) => (
-      `${countyName(flow.originCounty)}→${countyName(flow.destinationCounty)} ${formatPanelCount(flow.trips)} 人`
+      `${countyName(flow.originCounty)}→${countyName(flow.destinationCounty)} ${formatCountyCount(flow.trips)} 人`
     ));
 
   return {
-    trips: `${formatPanelCount(trips)} 人次（模擬值）`,
-    fareRevenue: `NT$${formatPanelCount(fareRevenue)}（模擬值）`,
+    trips: `${formatCountyCount(trips)} 人次`,
+    fareRevenue: formatCountyMoney(fareRevenue),
     topPairs,
   };
 }

@@ -17,8 +17,8 @@ describe('crossCityView', () => {
     ];
 
     expect(crossCityView(flows)).toEqual({
-      trips: '0 人次（模擬值）',
-      fareRevenue: 'NT$0（模擬值）',
+      trips: '0 人次',
+      fareRevenue: '$0',
       topPairs: [],
     });
   });
@@ -33,8 +33,8 @@ describe('crossCityView', () => {
     ];
 
     expect(crossCityView(flows)).toEqual({
-      trips: '3,534 人次（模擬值）',
-      fareRevenue: 'NT$35,340（模擬值）',
+      trips: '3,534 人次',
+      fareRevenue: '$35,340',
       topPairs: [
         '桃園市→臺北市 1,234 人',
         '新北市→臺北市 900 人',
