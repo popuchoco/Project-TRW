@@ -477,6 +477,7 @@ function lineMetrics(runtime: TransitGraphRuntime, lineId: string): LineRuntimeM
 export class TransitSim {
   private readonly demand: VillageDemandModel;
   private readonly villageFingerprint: string;
+  private readonly periodsById: ReadonlyMap<SimulationPeriodId, (typeof SIMULATION_BALANCE.periods)[number]>;
   private readonly countyCodes: string[];
   private readonly villageCountyIndex: Uint16Array;
   private networkState: Network;
@@ -500,6 +501,7 @@ export class TransitSim {
   ) {
     this.demand = buildVillageDemandModel(villages, demandParameters);
     this.villageFingerprint = fingerprintVillages(this.demand.villages);
+    this.periodsById = new Map(SIMULATION_BALANCE.periods.map((period) => [period.id, period] as const));
     this.countyCodes = [...new Set(this.demand.villages.map(({ code }) => countyOfVillage(code)))].sort(compareText);
     const countyIndexByCode = new Map(this.countyCodes.map((code, index) => [code, index]));
     this.villageCountyIndex = Uint16Array.from(this.demand.villages, ({ code }) => countyIndexByCode.get(countyOfVillage(code))!);
@@ -690,6 +692,7 @@ export class TransitSim {
   private buildEquilibrium(): PeriodEquilibrium[] {
     const byPeriod = new Map<SimulationPeriodId, Map<string, EquilibriumRoute>>();
     const potentialByPeriod = new Map<SimulationPeriodId, number>();
+    const reversePathsBySignature = new Map<string, TransitPath>();
     this.representativeRoutesByPeriod = new Map();
     for (const period of SIMULATION_BALANCE.periods) {
       const id = period.id;
@@ -703,7 +706,7 @@ export class TransitSim {
         if (this.villageAccess[pair.first]!.length === 0 || this.villageAccess[pair.second]!.length === 0) continue;
         const dailyTripsEachDirection = pair.gravityWeight / this.demand.totalDirectedGravityWeight
           * this.demand.totalDailyTrips;
-        this.addPairDemand(pair.first, pair.second, pair.distanceKm, dailyTripsEachDirection, byPeriod);
+        this.addPairDemand(pair.first, pair.second, pair.distanceKm, dailyTripsEachDirection, byPeriod, reversePathsBySignature);
       }
     }
     return SIMULATION_BALANCE.periods.map(({ id }) => ({
@@ -721,6 +724,7 @@ export class TransitSim {
     distanceKm: number,
     dailyTrips: number,
     rowsByPeriod: Map<SimulationPeriodId, Map<string, EquilibriumRoute>>,
+    reversePathsBySignature: Map<string, TransitPath>,
   ): void {
     const alternativeTime = distanceKm / SIMULATION_BALANCE.alternativeMode.speedKmh * 3_600
       + SIMULATION_BALANCE.alternativeMode.fixedTimeSeconds;
@@ -730,20 +734,29 @@ export class TransitSim {
       if (!best || shares.transit <= 0) continue;
       const origin = this.demand.villages[originIndex]!;
       const destination = this.demand.villages[destinationIndex]!;
+      let reversePath = reversePathsBySignature.get(best.path.signature);
+      if (!reversePath) {
+        reversePath = reverseTransitPath(best.path);
+        reversePathsBySignature.set(best.path.signature, reversePath);
+      }
       const directions = [
         { path: best.path, originIndex, destinationIndex, origin, destination, walkInSeconds: best.walkInSeconds, walkOutSeconds: best.walkOutSeconds },
-        { path: reverseTransitPath(best.path), originIndex: destinationIndex, destinationIndex: originIndex, origin: destination, destination: origin,
+        { path: reversePath, originIndex: destinationIndex, destinationIndex: originIndex, origin: destination, destination: origin,
           walkInSeconds: best.walkOutSeconds, walkOutSeconds: best.walkInSeconds },
       ];
-      for (const periodId of group.periods) {
-        const period = SIMULATION_BALANCE.periods.find(({ id }) => id === periodId)!;
+      const periodContexts = group.periods.map((periodId) => ({
+        periodId,
+        period: this.periodsById.get(periodId)!,
+        rows: rowsByPeriod.get(periodId)!,
+        stationRoutes: this.representativeRoutesByPeriod.get(periodId)!,
+      }));
+      for (const { periodId, period, rows, stationRoutes } of periodContexts) {
         const potentialTrips = dailyTrips * period.demandShare;
         const desiredTrips = potentialTrips * shares.transit;
         if (desiredTrips <= 0) continue;
         const fareTotal = desiredTrips * fareForDistance(distanceKm);
         for (const direction of directions) {
           const path = direction.path;
-          const rows = rowsByPeriod.get(periodId)!;
           const existing = rows.get(path.signature);
           if (existing) {
             existing.desiredTrips += desiredTrips;
@@ -775,7 +788,6 @@ export class TransitSim {
           }
           const odKey = `${direction.origin.code}>${direction.destination.code}`;
           const routeOrder = { odKey, flow: desiredTrips, periodId, pathSignature: path.signature };
-          const stationRoutes = this.representativeRoutesByPeriod.get(periodId)!;
           const routeStationIds = representativeStationIds(path, this.graph!);
           const winningStations = routeStationIds.filter((stationId) => {
             const selected = stationRoutes.get(stationId);
