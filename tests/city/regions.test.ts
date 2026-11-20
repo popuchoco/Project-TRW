@@ -5,6 +5,7 @@ import {
   extendRegionPayload,
   isRegionId,
   regionIncludesCounty,
+  villageSourceFor,
 } from '../../src/city/regions';
 import type { SavePayloadV2 } from '../../src/save/types';
 
@@ -42,6 +43,27 @@ describe('regions', () => {
   it('checks county membership', () => {
     expect(regionIncludesCounty(REGIONS.northNorthTaoyuan, '68000')).toBe(true);
     expect(regionIncludesCounty(REGIONS.northNorth, '68000')).toBe(false);
+  });
+
+  it('builds absolute village source URLs under the supplied base URL', () => {
+    const baseUrl = new URL('http://x/trw/');
+
+    const northNorth = villageSourceFor('northNorth', baseUrl);
+    expect(northNorth).toEqual({
+      kind: 'url',
+      url: 'http://x/trw/data/villages-6300065000.json',
+    });
+
+    const northNorthTaoyuan = villageSourceFor('northNorthTaoyuan', baseUrl);
+    expect(northNorthTaoyuan).toEqual({
+      kind: 'urls',
+      urls: [
+        'http://x/trw/data/villages-6300065000.json',
+        'http://x/trw/data/villages-68000.json',
+      ],
+    });
+    const urls = northNorthTaoyuan.kind === 'urls' ? northNorthTaoyuan.urls : [];
+    expect(urls.every((url) => url.startsWith('http://x/trw/data/'))).toBe(true);
   });
 
   it('extends a north-north payload to Taoyuan and removes transit state', () => {

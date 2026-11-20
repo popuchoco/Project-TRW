@@ -57,6 +57,17 @@ export function regionIncludesCounty(region: RegionDefinition, countyCode: strin
   return region.countyCodes.includes(countyCode);
 }
 
+export function villageSourceFor(regionId: RegionId, baseUrl: URL) {
+  const assets = REGIONS[regionId].villageAssets;
+  if (regionId === DEFAULT_REGION_ID) {
+    return { kind: 'url' as const, url: new URL(assets[0]!.attributes, baseUrl).href };
+  }
+  return {
+    kind: 'urls' as const,
+    urls: assets.map(({ attributes }) => new URL(attributes, baseUrl).href),
+  };
+}
+
 export function extendRegionPayload(payload: SavePayloadV2, to: RegionId): SavePayloadV2 {
   if ((payload.region ?? DEFAULT_REGION_ID) !== 'northNorth' || to !== 'northNorthTaoyuan') {
     throw new Error('僅允許從北北延伸到北北桃。');
