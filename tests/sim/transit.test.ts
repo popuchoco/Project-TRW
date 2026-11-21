@@ -7,8 +7,10 @@ import {
   binaryLogitShares,
   buildVillageDemandModel,
   TransitSim,
+  type TransitPath,
   type VillageDemandPoint,
 } from '../../src/sim/transit';
+import { getReversePathFromCache } from '../../src/sim/transit/TransitSim';
 
 const TEST_VILLAGES: VillageDemandPoint[] = [
   { code: 'A', population: 50_000, lon: 121.50, lat: 25.03 },
@@ -95,6 +97,33 @@ describe('gravity demand and transit choice', () => {
     const shares = binaryLogitShares(900, 1_200, 300);
     expect(shares.transit + shares.alternative).toBeCloseTo(1, 12);
     expect(binaryLogitShares(null, 600)).toEqual({ transit: 0, alternative: 1 });
+  });
+});
+
+describe('period-group reverse paths', () => {
+  it('keeps the same path time separately for peak and off-peak groups', () => {
+    const peakPath: TransitPath = {
+      startStationId: 's1',
+      endStationId: 's2',
+      timeSeconds: 420,
+      legs: [{
+        lineId: 'l1', fromStationId: 's1', toStationId: 's2',
+        segments: [{ lineId: 'l1', segmentIndex: 0, direction: 1 }],
+      }],
+      transfers: 0,
+      signature: 'l1:s1>s2:0+',
+    };
+    const offPeakPath = { ...peakPath, timeSeconds: 780 };
+    const peakReversePaths = new Map<string, TransitPath>();
+    const offPeakReversePaths = new Map<string, TransitPath>();
+
+    const reversePeak = getReversePathFromCache(peakPath, peakReversePaths);
+    const reverseOffPeak = getReversePathFromCache(offPeakPath, offPeakReversePaths);
+
+    expect(reversePeak.timeSeconds).toBe(420);
+    expect(reverseOffPeak.timeSeconds).toBe(780);
+    expect(peakReversePaths.size).toBe(1);
+    expect(offPeakReversePaths.size).toBe(1);
   });
 });
 
