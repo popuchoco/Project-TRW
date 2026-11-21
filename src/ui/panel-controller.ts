@@ -33,6 +33,8 @@ interface PanelControllerDeps {
   setSelectedSimSpeed: (speed: SimSpeed) => void;
   getSelectedNetworkItem: () => ReturnType<CityController['getSelectedNetworkItem']>;
   showStatus: (message: string) => void;
+  /** Shows a status that later hide calls restore instead of hiding (fatal, e.g. simulation start failure). */
+  showStickyStatus?: (message: string) => void;
   updateRenderActivity: (running: boolean, hasVisibleTrains: boolean) => void;
 }
 
@@ -72,6 +74,7 @@ export function createPanelController({
   setSelectedSimSpeed,
   getSelectedNetworkItem,
   showStatus,
+  showStickyStatus,
   updateRenderActivity,
 }: PanelControllerDeps): PanelController {
   const getRegion = getRegionDep ?? (() => restoredPayload?.region ?? DEFAULT_REGION_ID);
@@ -328,7 +331,7 @@ export function createPanelController({
       transitClient.subscribeErrors(() => {
         if (errorNotified) return;
         errorNotified = true;
-        showStatus('模擬啟動失敗，請重新整理頁面。');
+        (showStickyStatus ?? showStatus)('模擬啟動失敗，請重新整理頁面。');
       });
     }
     transitClient.subscribe((snapshot) => {

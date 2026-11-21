@@ -175,6 +175,16 @@ async function startApp(): Promise<void> {
     ui.status.textContent = message;
     ui.status.hidden = false;
   };
+  // A fatal status (simulation start failure) must survive the routine "loading done" hides below.
+  let stickyStatus: string | undefined;
+  const showStickyStatus = (message: string): void => {
+    stickyStatus = message;
+    showStatus(message);
+  };
+  const hideStatus = (): void => {
+    if (stickyStatus) showStatus(stickyStatus);
+    else ui.status.hidden = true;
+  };
   const panelController = createPanelController({
     mount,
     ui,
@@ -191,6 +201,7 @@ async function startApp(): Promise<void> {
     setSelectedSimSpeed: (speed) => { selectedSimSpeed = speed; },
     getSelectedNetworkItem: () => cityControllerRef.current?.getSelectedNetworkItem(),
     showStatus,
+    showStickyStatus,
     updateRenderActivity: (running, hasVisibleTrains) => renderScheduler?.setSimulationActivity(running, hasVisibleTrains),
   });
   let regionExtensionConfirmationTimer: number | undefined;
@@ -336,11 +347,11 @@ async function startApp(): Promise<void> {
       ui.densityLegend.hidden = !rendererState.current?.isMetroView;
       ui.editorToolbar.hidden = !rendererState.current?.isMetroView;
       cityController.updateEditorControls();
-      ui.status.hidden = true;
+      hideStatus();
     }).catch((error: unknown) => {
       console.error(`Unable to load ${region.name} village geometry`, error);
-      ui.status.textContent = `${region.name}村里資料載入失敗，請返回全島後再試。`;
-      ui.status.hidden = false;
+      const geometryFailure = `${region.name}村里資料載入失敗，請返回全島後再試。`;
+      showStatus(stickyStatus ? `${stickyStatus}${geometryFailure}` : geometryFailure);
       ui.editorToolbar.hidden = true;
       villageGeometryPromise = undefined;
     });
@@ -363,7 +374,7 @@ async function startApp(): Promise<void> {
     const request = loader.loadLod(lod).then((features) => {
       rendererState.current?.setLodFeatures(lod, features);
       loadedLods.add(lod);
-      ui.status.hidden = true;
+      hideStatus();
     }).catch((error: unknown) => {
       console.error(`Unable to load ${lod}`, error);
       ui.status.textContent = '地圖細節載入失敗，請確認資料檔案可讀取。';
@@ -445,7 +456,7 @@ async function startApp(): Promise<void> {
       ui.editorToolbar.hidden = !active || !hasVillageGeometry;
       panelController.setMetroViewActive(active);
       if (active) ensureVillageGeometry();
-      else if (ui.status.textContent === villageLoadingStatus) ui.status.hidden = true;
+      else if (ui.status.textContent === villageLoadingStatus) hideStatus();
     },
     () => renderScheduler?.invalidate(),
   );
@@ -544,7 +555,7 @@ async function startApp(): Promise<void> {
     createdRenderer.hasVisibleTrains,
   );
   panelController.updateSimulationUi();
-  ui.status.hidden = true;
+  hideStatus();
 
   // Keep a finer hit-test topology warm after startup, or as soon as the user zooms.
   triggerLod1Preload = scheduleOnceOnIdleOrTrigger(() => { void ensureLod('lod1'); });
