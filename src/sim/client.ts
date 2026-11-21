@@ -52,6 +52,7 @@ export class SimClient {
   private transitSnapshots: Array<{ snapshot: TransitWorkerSnapshot; receivedAt: number }> = [];
   private readonly snapshotSubscribers = new Set<(snapshot: SimClientSnapshot) => void>();
   private readonly lineFlowsSubscribers = new Set<(message: LineFlowsMessage) => void>();
+  private readonly errorSubscribers = new Set<(message: string) => void>();
   private readonly pendingRequests = new Map<string, {
     resolve: (value?: unknown) => void;
     reject: (error: Error) => void;
@@ -78,6 +79,11 @@ export class SimClient {
   subscribeLineFlows(listener: (message: LineFlowsMessage) => void): () => void {
     this.lineFlowsSubscribers.add(listener);
     return () => { this.lineFlowsSubscribers.delete(listener); };
+  }
+
+  subscribeErrors(listener: (message: string) => void): () => void {
+    this.errorSubscribers.add(listener);
+    return () => { this.errorSubscribers.delete(listener); };
   }
 
   start(seed: number, continuation?: SimContinuationState, options: SimStartOptions = {}): void {
@@ -339,11 +345,16 @@ export class SimClient {
       if (!request) return;
       this.pendingRequests.delete(message.requestId);
       request.resolve(message.type === 'saveStateResult' ? message.state : undefined);
-    } else if (message.type === 'error' && message.requestId) {
-      const request = this.pendingRequests.get(message.requestId);
-      if (!request) return;
-      this.pendingRequests.delete(message.requestId);
-      request.reject(new Error(message.message));
+    } else if (message.type === 'error') {
+      if (message.requestId) {
+        const request = this.pendingRequests.get(message.requestId);
+        if (!request) return;
+        this.pendingRequests.delete(message.requestId);
+        request.reject(new Error(message.message));
+      } else {
+        console.error('Simulation worker error:', message.message);
+        for (const subscriber of this.errorSubscribers) subscriber(message.message);
+      }
     }
   };
 

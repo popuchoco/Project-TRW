@@ -8,7 +8,7 @@ import { RenderScheduler } from './render/RenderScheduler';
 import { IndexedDbSaveStorage } from './save/storage';
 import { loadSave, savePayload } from './save/save';
 import { requestPersistentStorage } from './save/persistence';
-import type { SavePayloadV2 } from './save/types';
+import type { SavePayloadV2, SaveRecord } from './save/types';
 import { registerServiceWorker } from './sw/register';
 import { SimClient } from './sim/client';
 import { createSim } from './sim/core';
@@ -92,6 +92,13 @@ let automaticPauseOnHide = false;
 let selectedSimSpeed: SimSpeed = 1;
 
 const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
+
+function isSaveRecordV2(
+  record: SaveRecord | undefined,
+): record is SaveRecord & { schemaVersion: 2; payload: SavePayloadV2 } {
+  return record?.schemaVersion === 2;
+}
+
 window.__TRW__ = {
   ready,
   get renderCount() { return renderScheduler?.renderCount ?? 0; },
@@ -147,7 +154,11 @@ async function startApp(): Promise<void> {
   let restoredPayload: SavePayloadV2 | undefined;
   try {
     const savedRecord = await loadSave(saveStorage);
-    restoredPayload = savedRecord?.payload as SavePayloadV2 | undefined;
+    if (isSaveRecordV2(savedRecord)) {
+      restoredPayload = savedRecord.payload;
+    } else if (savedRecord) {
+      console.warn(`存檔版本 ${savedRecord.schemaVersion} 不受支援，將以新遊戲開始。`);
+    }
   } catch (error) {
     console.info('Saved game could not be loaded; starting with a fresh session.', error);
   }
@@ -163,6 +174,16 @@ async function startApp(): Promise<void> {
   const showStatus = (message: string): void => {
     ui.status.textContent = message;
     ui.status.hidden = false;
+  };
+  // A fatal status (simulation start failure) must survive the routine "loading done" hides below.
+  let stickyStatus: string | undefined;
+  const showStickyStatus = (message: string): void => {
+    stickyStatus = message;
+    showStatus(message);
+  };
+  const hideStatus = (): void => {
+    if (stickyStatus) showStatus(stickyStatus);
+    else ui.status.hidden = true;
   };
   const panelController = createPanelController({
     mount,
@@ -180,6 +201,7 @@ async function startApp(): Promise<void> {
     setSelectedSimSpeed: (speed) => { selectedSimSpeed = speed; },
     getSelectedNetworkItem: () => cityControllerRef.current?.getSelectedNetworkItem(),
     showStatus,
+    showStickyStatus,
     updateRenderActivity: (running, hasVisibleTrains) => renderScheduler?.setSimulationActivity(running, hasVisibleTrains),
   });
   let regionExtensionConfirmationTimer: number | undefined;
@@ -203,9 +225,14 @@ async function startApp(): Promise<void> {
       try {
         await panelController.saveLiveState();
         const savedRecord = await loadSave(saveStorage);
-        if (!savedRecord) throw new Error('找不到存檔。');
+        if (!isSaveRecordV2(savedRecord)) {
+          if (savedRecord) {
+            console.warn(`存檔版本 ${savedRecord.schemaVersion} 不受支援，無法延伸到桃園。`);
+          }
+          throw new Error('找不到存檔。');
+        }
         const extendedPayload = extendRegionPayload(
-          savedRecord.payload as SavePayloadV2,
+          savedRecord.payload,
           'northNorthTaoyuan',
         );
         await savePayload(saveStorage, extendedPayload);
@@ -320,11 +347,11 @@ async function startApp(): Promise<void> {
       ui.densityLegend.hidden = !rendererState.current?.isMetroView;
       ui.editorToolbar.hidden = !rendererState.current?.isMetroView;
       cityController.updateEditorControls();
-      ui.status.hidden = true;
+      hideStatus();
     }).catch((error: unknown) => {
       console.error(`Unable to load ${region.name} village geometry`, error);
-      ui.status.textContent = `${region.name}村里資料載入失敗，請返回全島後再試。`;
-      ui.status.hidden = false;
+      const geometryFailure = `${region.name}村里資料載入失敗，請返回全島後再試。`;
+      showStatus(stickyStatus ? `${stickyStatus}${geometryFailure}` : geometryFailure);
       ui.editorToolbar.hidden = true;
       villageGeometryPromise = undefined;
     });
@@ -347,7 +374,7 @@ async function startApp(): Promise<void> {
     const request = loader.loadLod(lod).then((features) => {
       rendererState.current?.setLodFeatures(lod, features);
       loadedLods.add(lod);
-      ui.status.hidden = true;
+      hideStatus();
     }).catch((error: unknown) => {
       console.error(`Unable to load ${lod}`, error);
       ui.status.textContent = '地圖細節載入失敗，請確認資料檔案可讀取。';
@@ -429,7 +456,7 @@ async function startApp(): Promise<void> {
       ui.editorToolbar.hidden = !active || !hasVillageGeometry;
       panelController.setMetroViewActive(active);
       if (active) ensureVillageGeometry();
-      else if (ui.status.textContent === villageLoadingStatus) ui.status.hidden = true;
+      else if (ui.status.textContent === villageLoadingStatus) hideStatus();
     },
     () => renderScheduler?.invalidate(),
   );
@@ -528,7 +555,7 @@ async function startApp(): Promise<void> {
     createdRenderer.hasVisibleTrains,
   );
   panelController.updateSimulationUi();
-  ui.status.hidden = true;
+  hideStatus();
 
   // Keep a finer hit-test topology warm after startup, or as soon as the user zooms.
   triggerLod1Preload = scheduleOnceOnIdleOrTrigger(() => { void ensureLod('lod1'); });

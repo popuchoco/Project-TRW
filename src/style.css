@@ -292,6 +292,21 @@ body {
   font-size: var(--panel-font-body);
 }
 
+.panel-subtitle {
+  margin: var(--panel-space-section) 0 var(--panel-space-tight);
+  color: #637078;
+  font-size: var(--panel-font-secondary);
+}
+
+.panel-list {
+  margin: 0;
+  padding: 0;
+  color: #637078;
+  font-size: var(--panel-font-body);
+  line-height: 1.45;
+  list-style: none;
+}
+
 .station-details[hidden],
 .simulation-panels[hidden],
 .operation-panel[hidden] {

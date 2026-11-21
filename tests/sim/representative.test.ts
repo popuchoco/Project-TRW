@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildTransitGraph, shortestStationPath } from '../../src/sim/transit/graph';
-import { buildRepresentativeTripPath } from '../../src/sim/transit/representative';
+import { buildRepresentativeTripPath, representativeStationIds } from '../../src/sim/transit/representative';
 import { TransitWorkerRuntime } from '../../src/sim/worker-runtime';
 import { selectRepresentativeTrip, tripLegs, type RepresentativeTripRoute } from '../../src/sim/transit/representative';
 
@@ -98,6 +98,17 @@ describe('representative passenger selection', () => {
     expect(ride?.viaStationIds?.at(-1)).toBe(ride?.toStationId);
     expect(tripLegs(path).reduce((total, leg) => total + leg.minutes, 0))
       .toBeCloseTo((30 + transitPath!.timeSeconds + 90) / 60, 10);
+  });
+
+  it('returns the same representative stations for repeated path signatures', () => {
+    const graph = buildTransitGraph(network);
+    const firstPath = shortestStationPath(graph, 'morningPeak', 's1', 's2');
+    const repeatedPath = shortestStationPath(graph, 'morningPeak', 's1', 's2');
+    expect(firstPath).not.toBeNull();
+    expect(repeatedPath).not.toBeNull();
+    expect(repeatedPath!.signature).toBe(firstPath!.signature);
+
+    expect(representativeStationIds(repeatedPath!, graph)).toEqual(representativeStationIds(firstPath!, graph));
   });
 
   it('returns representative trip data on demand from the worker runtime', async () => {

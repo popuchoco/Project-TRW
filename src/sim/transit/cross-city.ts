@@ -7,6 +7,11 @@ export interface CountyFlow {
   fareRevenue: number;
 }
 
+export interface CountyFlowTotals {
+  trips: number;
+  fareRevenue: number;
+}
+
 function assertNonNegativeFinite(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new RangeError(`${name} must be a finite, non-negative number`);
@@ -26,6 +31,31 @@ function compareCountyFlows(a: CountyFlow, b: CountyFlow): number {
 
 export function countyOfVillage(code: string): string {
   return code.slice(0, 5);
+}
+
+export function addIndexedCountyFlow(
+  acc: Map<number, CountyFlowTotals>,
+  pairIndex: number,
+  trips: number,
+  fare: number,
+): void {
+  if (!Number.isSafeInteger(pairIndex) || pairIndex < 0) {
+    throw new RangeError('pairIndex must be a non-negative safe integer');
+  }
+  assertNonNegativeFinite(trips, 'trips');
+  assertNonNegativeFinite(fare, 'fare');
+
+  const current = acc.get(pairIndex);
+  const nextTrips = (current?.trips ?? 0) + trips;
+  const nextFareRevenue = (current?.fareRevenue ?? 0) + fare;
+  assertNonNegativeFinite(nextTrips, 'trips total');
+  assertNonNegativeFinite(nextFareRevenue, 'fare total');
+  if (current) {
+    current.trips = nextTrips;
+    current.fareRevenue = nextFareRevenue;
+  } else {
+    acc.set(pairIndex, { trips: nextTrips, fareRevenue: nextFareRevenue });
+  }
 }
 
 export function addCountyFlow(

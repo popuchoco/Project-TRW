@@ -143,16 +143,28 @@ describe('TransitWorkerRuntime', () => {
     expect(restoredSnapshot).toEqual(uninterruptedSnapshot);
   });
 
-  it('loads a P1-2 save whose snapshot has no county flows', async () => {
-    const source = new TransitWorkerRuntime();
-    await source.handle({ type: 'start', seed: 42, villages, network, paused: true });
-    const legacySaved = await saveState(source);
+  it('recomputes county flows from a P1-2 save and continues identically for one day', async () => {
+    const uninterrupted = new TransitWorkerRuntime();
+    await uninterrupted.handle({ type: 'start', seed: 42, villages, network, paused: true });
+    const legacySaved = await saveState(uninterrupted);
+    expect(Array.isArray(legacySaved.transit.snapshot.city.countyFlows)).toBe(true);
     delete legacySaved.transit.snapshot.city.countyFlows;
 
     const restored = new TransitWorkerRuntime();
     await restored.handle({ type: 'start', seed: 0, villages, network: createEmptyNetwork(), paused: true });
     const loadResult = await restored.handle({ type: 'loadState', requestId: 'load-p1-2', state: legacySaved });
     expect(loadResult[0]).toEqual({ type: 'loadStateResult', requestId: 'load-p1-2', ok: true });
+    expect(Array.isArray(transitSnapshot(loadResult).city.countyFlows)).toBe(true);
+
+    await uninterrupted.handle({ type: 'resume' });
+    await restored.handle({ type: 'resume' });
+    let uninterruptedSnapshot: TransitWorkerSnapshot | undefined;
+    let restoredSnapshot: TransitWorkerSnapshot | undefined;
+    for (let tick = 0; tick < 1_440; tick += 1) {
+      uninterruptedSnapshot = transitSnapshot(uninterrupted.advanceTick());
+      restoredSnapshot = transitSnapshot(restored.advanceTick());
+    }
+    expect(restoredSnapshot).toEqual(uninterruptedSnapshot);
   });
 
   it('loads the pre-P1-1e save fixture and recomputes its legacy line flows', async () => {

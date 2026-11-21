@@ -167,7 +167,7 @@ describe('cross city panel values', () => {
     return rowLabel?.parentElement?.children[1]?.textContent;
   }
 
-  it('shows simulated totals and the three busiest county pairs', () => {
+  it('shows the three busiest county pairs and labels totals as simulated', () => {
     const { container, panels } = createPanels();
     try {
       panels.update(
@@ -187,8 +187,8 @@ describe('cross city panel values', () => {
         } as unknown as Parameters<typeof panels.update>[1],
       );
 
-      expect(valueFor(container, '跨市旅次（模擬值）')).toBe('250 人次（模擬值）');
-      expect(valueFor(container, '跨市票收（模擬值）')).toBe('NT$1,100（模擬值）');
+      expect(valueFor(container, '跨市旅次（模擬值）')).toBe('250 人次');
+      expect(valueFor(container, '跨市票收（模擬值）')).toBe('$1,100');
       const pairList = descendants(container).find((node) => node.className === 'panel-list');
       expect(pairList?.children.map((pair) => pair.textContent)).toEqual([
         '新北市→臺北市 100 人',
