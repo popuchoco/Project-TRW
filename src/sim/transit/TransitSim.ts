@@ -298,6 +298,18 @@ function reverseTransitPath(path: TransitPath): TransitPath {
   };
 }
 
+export function getReversePathFromCache(
+  path: TransitPath,
+  reversePathsBySignature: Map<string, TransitPath>,
+): TransitPath {
+  let reversePath = reversePathsBySignature.get(path.signature);
+  if (!reversePath) {
+    reversePath = reverseTransitPath(path);
+    reversePathsBySignature.set(path.signature, reversePath);
+  }
+  return reversePath;
+}
+
 function copyNetwork(network: Network): Network {
   return {
     stations: network.stations.map((station) => ({ ...station })),
@@ -703,7 +715,10 @@ export class TransitSim {
   private buildEquilibrium(): PeriodEquilibrium[] {
     const byPeriod = new Map<SimulationPeriodId, Map<string, EquilibriumRoute>>();
     const potentialByPeriod = new Map<SimulationPeriodId, number>();
-    const reversePathsBySignature = new Map<string, TransitPath>();
+    const reversePathsByGroup = new Map<SimulationPeriodId, Map<string, TransitPath>>();
+    for (const group of SERVICE_PERIOD_GROUPS) {
+      reversePathsByGroup.set(group.representative, new Map());
+    }
     const representativeStationsBySignature = new Map<string, string[]>();
     this.representativeRoutesByPeriod = new Map();
     for (const period of SIMULATION_BALANCE.periods) {
@@ -724,7 +739,7 @@ export class TransitSim {
           pair.distanceKm,
           dailyTripsEachDirection,
           byPeriod,
-          reversePathsBySignature,
+          reversePathsByGroup,
           representativeStationsBySignature,
         );
       }
@@ -744,7 +759,7 @@ export class TransitSim {
     distanceKm: number,
     dailyTrips: number,
     rowsByPeriod: Map<SimulationPeriodId, Map<string, EquilibriumRoute>>,
-    reversePathsBySignature: Map<string, TransitPath>,
+    reversePathsByGroup: Map<SimulationPeriodId, Map<string, TransitPath>>,
     representativeStationsBySignature: Map<string, string[]>,
   ): void {
     const alternativeTime = distanceKm / SIMULATION_BALANCE.alternativeMode.speedKmh * 3_600
@@ -755,11 +770,7 @@ export class TransitSim {
       if (!best || shares.transit <= 0) continue;
       const origin = this.demand.villages[originIndex]!;
       const destination = this.demand.villages[destinationIndex]!;
-      let reversePath = reversePathsBySignature.get(best.path.signature);
-      if (!reversePath) {
-        reversePath = reverseTransitPath(best.path);
-        reversePathsBySignature.set(best.path.signature, reversePath);
-      }
+      const reversePath = getReversePathFromCache(best.path, reversePathsByGroup.get(group.representative)!);
       const directions = [
         { path: best.path, originIndex, destinationIndex, origin, destination, walkInSeconds: best.walkInSeconds, walkOutSeconds: best.walkOutSeconds },
         { path: reversePath, originIndex: destinationIndex, destinationIndex: originIndex, origin: destination, destination: origin,

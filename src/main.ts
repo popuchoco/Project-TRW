@@ -29,6 +29,7 @@ import type { TransitWorkerSnapshot } from './sim/protocol';
 import type { TownFeature } from './map/hit';
 import { createUi, renderDensityLegend } from './ui/app-shell';
 import { createPanelController } from './ui/panel-controller';
+import { createStatusController } from './ui/status';
 import './style.css';
 
 type FpsSetting = 'auto' | 30 | 60;
@@ -171,20 +172,8 @@ async function startApp(): Promise<void> {
   const rendererState: { current?: MapRenderer } = {};
   const freshSimulation = createSim(0x545257);
   const cityControllerRef: { current?: CityController } = {};
-  const showStatus = (message: string): void => {
-    ui.status.textContent = message;
-    ui.status.hidden = false;
-  };
-  // A fatal status (simulation start failure) must survive the routine "loading done" hides below.
-  let stickyStatus: string | undefined;
-  const showStickyStatus = (message: string): void => {
-    stickyStatus = message;
-    showStatus(message);
-  };
-  const hideStatus = (): void => {
-    if (stickyStatus) showStatus(stickyStatus);
-    else ui.status.hidden = true;
-  };
+  const statusController = createStatusController(ui.status);
+  const { show: showStatus, showSticky: showStickyStatus, hide: hideStatus } = statusController;
   const panelController = createPanelController({
     mount,
     ui,
@@ -228,6 +217,7 @@ async function startApp(): Promise<void> {
         if (!isSaveRecordV2(savedRecord)) {
           if (savedRecord) {
             console.warn(`存檔版本 ${savedRecord.schemaVersion} 不受支援，無法延伸到桃園。`);
+            throw new Error('存檔版本不受支援，無法延伸到桃園。');
           }
           throw new Error('找不到存檔。');
         }
@@ -351,7 +341,8 @@ async function startApp(): Promise<void> {
     }).catch((error: unknown) => {
       console.error(`Unable to load ${region.name} village geometry`, error);
       const geometryFailure = `${region.name}村里資料載入失敗，請返回全島後再試。`;
-      showStatus(stickyStatus ? `${stickyStatus}${geometryFailure}` : geometryFailure);
+      const stickyMessage = statusController.getStickyMessage();
+      showStatus(stickyMessage ? `${stickyMessage}${geometryFailure}` : geometryFailure);
       ui.editorToolbar.hidden = true;
       villageGeometryPromise = undefined;
     });

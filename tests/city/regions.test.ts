@@ -7,6 +7,7 @@ import {
   regionIncludesCounty,
   villageSourceFor,
 } from '../../src/city/regions';
+import { validateSaveRecord } from '../../src/save/validation';
 import type { SavePayloadV2 } from '../../src/save/types';
 
 describe('regions', () => {
@@ -92,6 +93,31 @@ describe('regions', () => {
     expect(extended.camera).toBe(payload.camera);
     expect(extended.simulation).toBe(payload.simulation);
     expect(extended.stats).toBe(payload.stats);
+  });
+
+  it('validates an extended v2 save record without transit state', () => {
+    const payload: SavePayloadV2 = {
+      region: 'northNorth',
+      network: { stations: [], lines: [], nextId: 1 },
+      camera: { x: 1, y: 2, zoom: 3 },
+      view: 'metro',
+      simulation: {
+        gameTimeMs: 1,
+        speed: 1,
+        paused: false,
+        seed: 1,
+        rngState: 1,
+        seq: 0,
+        routeProgress: 0,
+      },
+      stats: { passengers: 4 },
+    };
+    const extended = extendRegionPayload(payload, 'northNorthTaoyuan');
+
+    const record = validateSaveRecord({ schemaVersion: 2, savedAt: 0, payload: extended });
+
+    expect(record.payload.region).toBe('northNorthTaoyuan');
+    expect(Object.hasOwn(record.payload, 'transit')).toBe(false);
   });
 
   it('does not mutate the original payload', () => {
