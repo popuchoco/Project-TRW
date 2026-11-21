@@ -217,6 +217,7 @@ async function startApp(): Promise<void> {
         if (!isSaveRecordV2(savedRecord)) {
           if (savedRecord) {
             console.warn(`存檔版本 ${savedRecord.schemaVersion} 不受支援，無法延伸到桃園。`);
+            throw new Error('存檔版本不受支援，無法延伸到桃園。');
           }
           throw new Error('找不到存檔。');
         }
